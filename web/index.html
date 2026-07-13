@@ -32,12 +32,14 @@
 
     <nav class="tabs">
       <button class="tab on" data-tab="viral" onclick="switchTab('viral')">🔥 Вирусное</button>
+      <button class="tab" data-tab="scout" onclick="switchTab('scout')">🔎 Разведка</button>
       <button class="tab" data-tab="plan" onclick="switchTab('plan')">🗓 Контент-план</button>
       <button class="tab hidden" id="tab-team" data-tab="team" onclick="switchTab('team')">👥 Команда</button>
     </nav>
 
     <main class="content">
       <section id="pane-viral" class="pane"></section>
+      <section id="pane-scout" class="pane hidden"></section>
       <section id="pane-plan" class="pane hidden"></section>
       <section id="pane-team" class="pane hidden"></section>
     </main>

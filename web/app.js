@@ -50,7 +50,12 @@ function switchTab(t) {
   $("pane-" + t).classList.remove("hidden");
   renderCurrent();
 }
-function renderCurrent() { if (TAB === "viral") renderViral(); else if (TAB === "plan") renderPlan(); else renderTeam(); }
+function renderCurrent() {
+  if (TAB === "viral") renderViral();
+  else if (TAB === "scout") renderScout();
+  else if (TAB === "plan") renderPlan();
+  else renderTeam();
+}
 
 /* ---------- Вирусное ---------- */
 async function renderViral() {
@@ -105,6 +110,86 @@ function ideaCard(row) {
 }
 async function delIdea(id) { const r = await api("ideas/delete", { id }); toast(r.ok ? "Удалено ✓" : "Не удалось"); loadIdeas(); }
 
+/* ---------- Разведка (мультиплатформа) ---------- */
+let SCOUT_PLATS = [], SCOUT_READY = {};
+async function renderScout() {
+  const pr = await api("scout/platforms");
+  SCOUT_PLATS = pr.platforms || []; SCOUT_READY = pr.ready || {};
+  const opts = SCOUT_PLATS.map((p) => `<option value="${p.key}">${esc(p.name)}${p.auto ? "" : " — вручную"}</option>`).join("");
+  const auto = SCOUT_PLATS.filter((p) => p.auto).map((p) => p.name + (SCOUT_READY[p.key] === false ? " (нет ключа)" : "")).join(", ");
+  $("pane-scout").innerHTML = `
+    <div class="card">
+      <h2>Источники — аккаунты и каналы конкурентов</h2>
+      <div class="hint">Добавляй любые публичные аккаунты/каналы из любой сети. Авто-сбор роликов сейчас: <b>${esc(auto)}</b>. Для остальных сетей (Instagram, TikTok, Telegram, OK) добавляй сам источник, а конкретные ролики разбирай по ссылке во вкладке «Вирусное» — смотреть чужой контент не запрещено.</div>
+      <div class="row">
+        <select id="s-plat" style="flex:1">${opts}</select>
+        <input id="s-url" placeholder="Ссылка на аккаунт / канал / сообщество" style="flex:3">
+        <button class="btn ghost" onclick="addSource()">Добавить</button>
+      </div>
+      <div id="srcList" style="margin-top:10px"><div class="empty">Загружаю…</div></div>
+      <div style="margin-top:12px"><button class="btn primary" onclick="runScout()">🔎 Собрать свежие ролики</button>
+        <span id="scoutHint" class="hint" style="margin-left:10px"></span></div>
+    </div>
+    <div class="card">
+      <h2>Найденные ролики (по вовлечённости)</h2>
+      <div id="scoutList"><div class="empty">Загружаю…</div></div>
+    </div>`;
+  loadSources(); loadScout();
+}
+function platName(k) { const p = SCOUT_PLATS.find((x) => x.key === k); return p ? p.name : k; }
+async function loadSources() {
+  const r = await api("sources?region_id=" + CUR_REGION);
+  const box = $("srcList"); if (!box) return;
+  const list = (r.sources || []);
+  box.innerHTML = list.length ? list.map((s) =>
+    `<div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid var(--line)">
+      <span class="badge org">${esc(platName(s.platform))}</span>
+      <b>${esc(s.name || s.url)}</b>
+      <span style="color:var(--muted);font-size:13px">${esc(s.url)}</span>
+      <button class="link" style="margin-left:auto" onclick="delSource(${s.id})">убрать</button>
+    </div>`).join("") : `<div class="empty">Источников пока нет.</div>`;
+}
+async function addSource() {
+  const url = $("s-url").value.trim(), platform = $("s-plat").value;
+  if (!url) { toast("Вставь ссылку"); return; }
+  const r = await api("sources/add", { region_id: CUR_REGION, url, platform });
+  if (!r.ok) { toast(r.error || "Не удалось"); return; }
+  $("s-url").value = ""; toast("Добавлено ✓"); loadSources();
+}
+async function delSource(id) { const r = await api("sources/delete", { id }); toast(r.ok ? "Убрано ✓" : "Не удалось"); loadSources(); }
+async function runScout() {
+  toast("Собираю ролики… это может занять минуту");
+  const r = await api("scout/run", { region_id: CUR_REGION });
+  if (!r.ok) { toast(r.error || "Не удалось"); return; }
+  toast(`Собрано роликов: ${r.found}`);
+  const sk = (r.skipped || []);
+  $("scoutHint").textContent = sk.length ? "Авто-сбор не поддержан для: " + sk.join(", ") + " — эти ролики добавляй по ссылке во «Вирусном»." : "";
+  loadScout();
+}
+async function loadScout() {
+  const r = await api("scout?region_id=" + CUR_REGION);
+  const box = $("scoutList"); if (!box) return;
+  const list = (r.scout || []);
+  if (!list.length) { box.innerHTML = `<div class="empty">Пока пусто. Добавь источники и нажми «Собрать».</div>`; return; }
+  box.innerHTML = list.map((v) =>
+    `<div class="idea">
+      <div class="meta"><span class="badge org">${esc(platName(v.platform))}</span> <b>ER ${v.er}%</b> · 👍 ${v.likes} · 🔁 ${v.reposts} · 💬 ${v.comments}${v.views ? " · 👁 " + v.views : ""} · ${esc(v.source_name)} · ${esc(v.post_date)}</div>
+      <div class="line">${esc((v.text || "").slice(0, 200)) || "<span style='color:var(--muted)'>без текста</span>"}</div>
+      <div class="actions">
+        <a class="btn ghost sm" href="${esc(v.post_url)}" target="_blank" rel="noopener">Открыть</a>
+        <button class="btn primary sm" onclick="analyzeScout(${v.id})" ${v.analyzed ? "disabled" : ""}>${v.analyzed ? "разобрано ✓" : "Разобрать → идея"}</button>
+        <button class="link" onclick="delScout(${v.id})">удалить</button>
+      </div>
+    </div>`).join("");
+}
+async function analyzeScout(id) {
+  toast("Разбираю ролик… 10–20 сек");
+  const r = await api("scout/analyze", { id });
+  if (!r.ok) { toast(r.error || "Не удалось"); return; }
+  toast("Идея создана ✓ — смотри вкладку «Вирусное»"); loadScout();
+}
+async function delScout(id) { const r = await api("scout/delete", { id }); toast(r.ok ? "Удалено ✓" : "Не удалось"); loadScout(); }
+
 /* ---------- Контент-план ---------- */
 async function toPlan(ideaId) {
   const r = await api("ideas?region_id=" + CUR_REGION);
@@ -125,8 +210,19 @@ async function renderPlan() {
       ${esc(p.name)}${p.active ? "" : ` <small>· ${esc(p.note)}</small>`}</div>`).join("");
   $("pane-plan").innerHTML = `
     <div class="card">
+      <h2>Подключение соцсетей (автопостинг)</h2>
+      <div class="hint">Подключи сообщества VK/OK, чтобы платформа публиковала по расписанию. VK: токен сообщества с правом «Управление» + ID группы. OK: токен приложения + ID группы (нужны OK_APP_KEY/OK_APP_SECRET на сервере).</div>
+      <div id="socialBox"><div class="empty">Загружаю…</div></div>
+      <div class="row" style="margin-top:8px">
+        <select id="sc-plat"><option value="vk">VK</option><option value="ok">OK</option></select>
+        <input id="sc-token" placeholder="Токен доступа" style="flex:2">
+        <input id="sc-gid" placeholder="ID группы (число)" style="flex:1">
+        <button class="btn ghost" onclick="connectSocial()">Подключить</button>
+      </div>
+    </div>
+    <div class="card">
       <h2>Запланировать публикацию</h2>
-      <div class="hint">Соберите пост, выберите площадки и дату. Публикация в v1 — вручную; статусы помогают вести очередь. IG/TikTok сейчас недоступны в РФ (оставлены на будущее).</div>
+      <div class="hint">Собери пост, выбери площадки и дату/время — платформа опубликует автоматически (VK; OK после настройки приложения). Пока публикуется текст; медиа/видео во вложении — следующий шаг.</div>
       <input id="p-title" placeholder="Заголовок / тема" style="width:100%;margin-bottom:8px">
       <textarea id="p-text" placeholder="Текст поста / сценарий" style="width:100%;min-height:90px;margin-bottom:8px"></textarea>
       <div class="plats">${plats}</div>
@@ -141,7 +237,34 @@ async function renderPlan() {
       <h2>Контент-план региона</h2>
       <div id="planList"><div class="empty">Загружаю…</div></div>
     </div>`;
-  loadPlan();
+  loadSocial(); loadPlan();
+}
+async function loadSocial() {
+  const r = await api("social?region_id=" + CUR_REGION);
+  const box = $("socialBox"); if (!box) return;
+  const list = (r.social || []);
+  box.innerHTML = list.length ? list.map((s) =>
+    `<div style="display:flex;align-items:center;gap:8px;padding:4px 0">
+      <span class="badge st-ready">${esc(s.platform.toUpperCase())} подключён</span>
+      <span style="color:var(--muted);font-size:13px">группа ${esc(s.group_id || "—")}</span>
+      <button class="link" style="margin-left:auto" onclick="disconnectSocial('${esc(s.platform)}')">отключить</button>
+    </div>`).join("") : `<div class="empty">Ничего не подключено.</div>`;
+}
+async function connectSocial() {
+  const platform = $("sc-plat").value, token = $("sc-token").value.trim(), group_id = $("sc-gid").value.trim();
+  if (!token || !group_id) { toast("Нужны токен и ID группы"); return; }
+  const r = await api("social/connect", { region_id: CUR_REGION, platform, token, group_id });
+  if (!r.ok) { toast(r.error || "Не удалось"); return; }
+  $("sc-token").value = ""; $("sc-gid").value = ""; toast("Подключено ✓"); loadSocial();
+}
+async function disconnectSocial(platform) {
+  const r = await api("social/disconnect", { region_id: CUR_REGION, platform });
+  toast(r.ok ? "Отключено ✓" : "Не удалось"); loadSocial();
+}
+async function publishNow(id) {
+  toast("Публикую…");
+  const r = await api("plan/publish", { id });
+  toast(r.ok ? "Опубликовано ✓" : (r.error || "Не удалось")); loadPlan();
 }
 function togglePlat(k, elx) { PICK[k] = !PICK[k]; elx.classList.toggle("on", !!PICK[k]); }
 async function addPlan() {
@@ -169,12 +292,15 @@ async function loadPlan() {
       const when = (p.plan_date || "—") + (p.plan_time ? " " + p.plan_time : "");
       const nextSt = p.status === "draft" ? "ready" : (p.status === "ready" ? "published" : "draft");
       const stName = { draft: "Черновик", ready: "Готово", published: "Опубликовано" }[p.status] || p.status;
+      const pub = p.published_url ? `<div style="font-size:12px;margin-top:3px"><a href="${esc(p.published_url)}" target="_blank" rel="noopener">опубликовано ↗</a></div>` : "";
+      const perr = p.publish_error ? `<div style="font-size:12px;color:var(--red);margin-top:3px">${esc(p.publish_error)}</div>` : "";
+      const canPub = p.status !== "published";
       return `<tr>
         <td>${esc(when)}</td>
         <td><b>${esc(p.title)}</b>${p.text ? `<div style="color:var(--muted);font-size:13px;margin-top:2px">${esc(p.text).slice(0, 120)}</div>` : ""}</td>
         <td>${esc(pl)}</td>
-        <td><span class="badge st-${p.status}" style="cursor:pointer" onclick="cycleStatus(${p.id},'${nextSt}')">${stName}</span></td>
-        <td><button class="link" onclick="delPlan(${p.id})">Удалить</button></td>
+        <td><span class="badge st-${p.status}" style="cursor:pointer" onclick="cycleStatus(${p.id},'${nextSt}')">${stName}</span>${pub}${perr}</td>
+        <td>${canPub ? `<button class="btn ghost sm" onclick="publishNow(${p.id})">Опубликовать</button> ` : ""}<button class="link" onclick="delPlan(${p.id})">Удалить</button></td>
       </tr>`;
     }).join("")}</tbody></table>`;
 }
