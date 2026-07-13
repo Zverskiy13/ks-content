@@ -118,6 +118,11 @@ CREATE TABLE IF NOT EXISTS cp_scout (
     analyzed    boolean NOT NULL DEFAULT false,
     UNIQUE (region_id, post_url)
 );
+CREATE TABLE IF NOT EXISTS cp_brand (
+    region_id  bigint PRIMARY KEY REFERENCES cp_regions(id),
+    style      text NOT NULL DEFAULT '',
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
 CREATE TABLE IF NOT EXISTS cp_social (
     id         bigserial PRIMARY KEY,
     region_id  bigint REFERENCES cp_regions(id),
@@ -130,6 +135,11 @@ CREATE TABLE IF NOT EXISTS cp_social (
 ALTER TABLE cp_plan ADD COLUMN IF NOT EXISTS published_url text;
 ALTER TABLE cp_plan ADD COLUMN IF NOT EXISTS publish_error text;
 ALTER TABLE cp_plan ADD COLUMN IF NOT EXISTS published_at timestamptz;
+ALTER TABLE cp_plan ADD COLUMN IF NOT EXISTS image_url text;
+ALTER TABLE cp_plan ADD COLUMN IF NOT EXISTS image_data text;
+ALTER TABLE cp_plan ADD COLUMN IF NOT EXISTS video_url text;
+ALTER TABLE cp_plan ADD COLUMN IF NOT EXISTS metrics jsonb;
+ALTER TABLE cp_plan ADD COLUMN IF NOT EXISTS metrics_at timestamptz;
 CREATE INDEX IF NOT EXISTS cp_ideas_region ON cp_ideas(region_id);
 CREATE INDEX IF NOT EXISTS cp_plan_region ON cp_plan(region_id);
 CREATE INDEX IF NOT EXISTS cp_sources_region ON cp_sources(region_id);

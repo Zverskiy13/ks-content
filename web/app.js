@@ -54,6 +54,8 @@ function renderCurrent() {
   if (TAB === "viral") renderViral();
   else if (TAB === "scout") renderScout();
   else if (TAB === "plan") renderPlan();
+  else if (TAB === "results") renderResults();
+  else if (TAB === "studio") renderStudio();
   else renderTeam();
 }
 
@@ -67,6 +69,7 @@ async function renderViral() {
       <textarea id="v-note" placeholder="Описание: о чём ролик, что цепляет (по желанию)" style="width:100%;min-height:64px;margin-bottom:8px"></textarea>
       <button class="btn primary" onclick="doAnalyze()">Анализировать</button>
     </div>
+    <div id="genResult"></div>
     <div class="card">
       <h2>Найденные идеи</h2>
       <div id="ideaList"><div class="empty">Загружаю…</div></div>
@@ -86,6 +89,7 @@ async function loadIdeas() {
   const r = await api("ideas?region_id=" + CUR_REGION);
   const box = $("ideaList"); if (!box) return;
   const list = (r.ideas || []);
+  window.__ideas = list;
   box.innerHTML = list.length ? list.map(ideaCard).join("") : `<div class="empty">Пока пусто. Разберите первый ролик выше ↑</div>`;
 }
 function ideaCard(row) {
@@ -103,12 +107,51 @@ function ideaCard(row) {
     ${c.why_viral ? `<div class="line"><b>Почему зашло:</b> ${esc(c.why_viral)}</div>` : ""}
     ${apps ? `<div class="apps"><b>Перенос на направления:</b>${apps}</div>` : ""}
     <div class="actions">
-      <button class="btn ghost sm" onclick='toPlan(${row.id})'>→ В контент-план</button>
+      <button class="btn primary sm" onclick="genPost(${row.id})">✍️ Сделать пост</button>
+      <button class="btn ghost sm" onclick='toPlan(${row.id})'>→ В план (черновик)</button>
       <button class="link" onclick="delIdea(${row.id})">Удалить</button>
     </div>
   </div>`;
 }
 async function delIdea(id) { const r = await api("ideas/delete", { id }); toast(r.ok ? "Удалено ✓" : "Не удалось"); loadIdeas(); }
+
+/* агент-сценарист: из идеи → готовый пост */
+async function genPost(id) {
+  const c = (window.__ideas || []).find((x) => x.id === id); if (!c) return;
+  const d = c.data || {}, app = (d.applicability && d.applicability[0]) || {};
+  toast("Пишу пост… 10–20 сек");
+  const r = await api("script/generate", { region_id: CUR_REGION, theme: d.theme || "", hook: d.hook || "", direction: app.direction || "", idea: app.idea || "" });
+  if (!r.ok) { toast(r.error || "Не удалось"); return; }
+  window.__script = r.script; renderGen(r.script);
+}
+function renderGen(s) {
+  const box = $("genResult"); if (!box) return;
+  const cm = s.compliance || {};
+  const cbadge = cm.art24_ok === false ? `<span class="badge bad">ст.24: ${esc((cm.flags || []).join("; "))}</span>` : `<span class="badge ok">ст.24 ок</span>`;
+  const ebadge = cm.needs_erid ? `<span class="badge ad">реклама · нужен erid</span>` : `<span class="badge org">органика</span>`;
+  box.innerHTML = `<div class="card" style="border-color:var(--red)">
+    <h2>Готовый пост</h2>
+    ${(s.headlines || []).length ? `<div class="line"><b>Заголовки:</b> ${(s.headlines || []).map(esc).join(" · ")}</div>` : ""}
+    <div class="line" style="margin-top:8px"><b>VK:</b></div><div style="white-space:pre-wrap;font-size:14px">${esc(s.post_vk || "")}</div>
+    <div class="line" style="margin-top:8px"><b>OK:</b></div><div style="white-space:pre-wrap;font-size:14px">${esc(s.post_ok || "")}</div>
+    <div class="meta" style="margin-top:8px">${cbadge} ${ebadge}</div>
+    <div class="actions">
+      <button class="btn ghost sm" onclick="scriptToPlan('vk')">В план — версия VK</button>
+      <button class="btn ghost sm" onclick="scriptToPlan('ok')">В план — версия OK</button>
+      <button class="link" onclick="document.getElementById('genResult').innerHTML=''">скрыть</button>
+    </div></div>`;
+  box.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+function scriptToPlan(which) {
+  const s = window.__script; if (!s) return;
+  switchTab("plan");
+  setTimeout(() => {
+    if ($("p-title")) $("p-title").value = s.title || "";
+    if ($("p-text")) $("p-text").value = (which === "ok" ? s.post_ok : s.post_vk) || "";
+    window.__planCompliance = s.compliance || {};
+    toast("Пост перенесён в план — выбери площадку и дату");
+  }, 60);
+}
 
 /* ---------- Разведка (мультиплатформа) ---------- */
 let SCOUT_PLATS = [], SCOUT_READY = {};
@@ -225,6 +268,13 @@ async function renderPlan() {
       <div class="hint">Собери пост, выбери площадки и дату/время — платформа опубликует автоматически (VK; OK после настройки приложения). Пока публикуется текст; медиа/видео во вложении — следующий шаг.</div>
       <input id="p-title" placeholder="Заголовок / тема" style="width:100%;margin-bottom:8px">
       <textarea id="p-text" placeholder="Текст поста / сценарий" style="width:100%;min-height:90px;margin-bottom:8px"></textarea>
+      <div class="row" style="margin-bottom:8px">
+        <input id="p-imgprompt" placeholder="🎨 Обложка ИИ: опиши картинку (пусто — по заголовку)" style="flex:3">
+        <button class="btn ghost" onclick="genImage()">Сгенерировать обложку</button>
+      </div>
+      <div id="p-imgprev"></div>
+      <input id="p-image" placeholder="…или ссылка на готовую картинку (URL)" style="width:100%;margin-bottom:8px">
+      <input id="p-video" placeholder="Ссылка на видеофайл (URL .mp4, необязательно — загрузится в VK)" style="width:100%;margin-bottom:8px">
       <div class="plats">${plats}</div>
       <div class="row">
         <input id="p-date" type="date">
@@ -237,6 +287,7 @@ async function renderPlan() {
       <h2>Контент-план региона</h2>
       <div id="planList"><div class="empty">Загружаю…</div></div>
     </div>`;
+  if (window.__planImageData && $("p-imgprev")) $("p-imgprev").innerHTML = `<img src="data:image/png;base64,${window.__planImageData}" style="max-width:220px;border-radius:10px;margin:6px 0;display:block"><button class="link" onclick="clearImg()">убрать обложку</button>`;
   loadSocial(); loadPlan();
 }
 async function loadSocial() {
@@ -267,6 +318,17 @@ async function publishNow(id) {
   toast(r.ok ? "Опубликовано ✓" : (r.error || "Не удалось")); loadPlan();
 }
 function togglePlat(k, elx) { PICK[k] = !PICK[k]; elx.classList.toggle("on", !!PICK[k]); }
+async function genImage() {
+  const prompt = ($("p-imgprompt").value.trim()) || ($("p-title") ? $("p-title").value.trim() : "");
+  if (!prompt) { toast("Опиши картинку или заполни заголовок"); return; }
+  toast("Рисую обложку… 15–30 сек");
+  const r = await api("image/generate", { region_id: CUR_REGION, prompt });
+  if (!r.ok) { toast(r.error || "Не удалось"); return; }
+  window.__planImageData = r.image_b64;
+  $("p-imgprev").innerHTML = `<img src="data:image/png;base64,${r.image_b64}" style="max-width:220px;border-radius:10px;margin:6px 0;display:block"><button class="link" onclick="clearImg()">убрать обложку</button>`;
+  toast("Готово ✓ — приложится к посту");
+}
+function clearImg() { window.__planImageData = ""; if ($("p-imgprev")) $("p-imgprev").innerHTML = ""; }
 async function addPlan() {
   const title = $("p-title").value.trim(), text = $("p-text").value.trim();
   const platforms = Object.keys(PICK).filter((k) => PICK[k]);
@@ -275,10 +337,15 @@ async function addPlan() {
   const r = await api("plan/add", {
     region_id: CUR_REGION, title, text, platforms,
     date: $("p-date").value, time: $("p-time").value, status: $("p-status").value,
-    idea_id: window.__planIdeaId || null, compliance: window.__planCompliance || {}
+    idea_id: window.__planIdeaId || null, compliance: window.__planCompliance || {},
+    image_url: ($("p-image") ? $("p-image").value.trim() : ""),
+    video_url: ($("p-video") ? $("p-video").value.trim() : ""),
+    image_data: (window.__planImageData || "")
   });
   if (!r.ok) { toast(r.error || "Не удалось"); return; }
-  $("p-title").value = ""; $("p-text").value = ""; window.__planIdeaId = null; window.__planCompliance = null;
+  $("p-title").value = ""; $("p-text").value = ""; if ($("p-image")) $("p-image").value = ""; if ($("p-video")) $("p-video").value = "";
+  window.__planImageData = ""; if ($("p-imgprev")) $("p-imgprev").innerHTML = ""; if ($("p-imgprompt")) $("p-imgprompt").value = "";
+  window.__planIdeaId = null; window.__planCompliance = null;
   toast("В плане ✓"); loadPlan();
 }
 async function loadPlan() {
@@ -306,6 +373,110 @@ async function loadPlan() {
 }
 async function cycleStatus(id, st) { const r = await api("plan/status", { id, status: st }); if (r.ok) loadPlan(); }
 async function delPlan(id) { const r = await api("plan/delete", { id }); toast(r.ok ? "Удалено ✓" : "Не удалось"); loadPlan(); }
+
+/* ---------- Результаты (контролёр) ---------- */
+async function renderResults() {
+  $("pane-results").innerHTML = `
+    <div class="card">
+      <h2>Результаты публикаций</h2>
+      <div class="hint">Статистика опубликованных постов (VK). Обновляется автоматически ~раз в 30 мин; можно и вручную.</div>
+      <div style="margin:6px 0;display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn ghost" onclick="refreshStats()">Обновить статистику</button>
+        <button class="btn primary" onclick="resultsAdvice()">Совет ИИ — что масштабировать</button>
+      </div>
+      <div id="adviceBox"></div>
+      <div id="resList" style="margin-top:10px"><div class="empty">Загружаю…</div></div>
+    </div>`;
+  loadResults();
+}
+async function loadResults() {
+  const r = await api("results?region_id=" + CUR_REGION);
+  const box = $("resList"); if (!box) return;
+  const list = (r.results || []);
+  if (!list.length) { box.innerHTML = `<div class="empty">Пока нет опубликованных постов.</div>`; return; }
+  box.innerHTML = `<table><thead><tr><th>Дата</th><th>Пост</th><th>👁</th><th>👍</th><th>🔁</th><th>💬</th><th></th></tr></thead><tbody>${
+    list.map((p) => {
+      const m = (p.metrics && p.metrics.vk) || {};
+      const link = p.published_url ? `<a href="${esc(p.published_url)}" target="_blank" rel="noopener">открыть ↗</a>` : "";
+      return `<tr><td>${esc(p.published_at || "")}</td><td><b>${esc(p.title)}</b></td>
+        <td>${m.views || 0}</td><td>${m.likes || 0}</td><td>${m.reposts || 0}</td><td>${m.comments || 0}</td><td>${link}</td></tr>`;
+    }).join("")}</tbody></table>`;
+}
+async function refreshStats() {
+  toast("Обновляю статистику…");
+  const r = await api("plan/refresh", { region_id: CUR_REGION });
+  toast(r.ok ? `Обновлено постов: ${r.updated}` : (r.error || "Не удалось")); loadResults();
+}
+async function resultsAdvice() {
+  toast("Анализирую результаты… 10–20 сек");
+  const r = await api("results/advice", { region_id: CUR_REGION });
+  const box = $("adviceBox"); if (!box) return;
+  if (!r.ok) { box.innerHTML = `<div class="hint" style="color:var(--red)">${esc(r.error || "Не удалось")}</div>`; return; }
+  const li = (arr) => (arr || []).map((x) => `<li>${esc(x)}</li>`).join("");
+  box.innerHTML = `<div class="card" style="border-color:var(--red);margin-top:8px">
+    <div class="line"><b>${esc(r.summary || "")}</b></div>
+    <div class="line" style="margin-top:6px"><b>📈 Масштабировать:</b><ul>${li(r.scale)}</ul></div>
+    <div class="line"><b>🗑 Убрать / не повторять:</b><ul>${li(r.drop)}</ul></div>
+    <div class="line"><b>➡️ На следующий цикл:</b><ul>${li(r.next)}</ul></div>
+  </div>`;
+}
+
+/* ---------- Студия обложек (чат + фирстиль) ---------- */
+async function renderStudio() {
+  const br = await api("brand?region_id=" + CUR_REGION);
+  const style = (br && br.style) || "";
+  window.__studioThread = window.__studioThread || [];
+  $("pane-studio").innerHTML = `
+    <div class="card">
+      <h2>Фирменный стиль</h2>
+      <div class="hint">Опиши стиль клиники (цвета, настроение, что нельзя). ИИ будет держать его во всех картинках.</div>
+      <textarea id="brand-style" style="width:100%;min-height:72px" placeholder="Напр.: фирменный красный #E1191C, чистый минимализм, доверие и забота, светлые тона, реальные люди без стоковых улыбок, без текста на изображении">${esc(style)}</textarea>
+      <button class="btn ghost" style="margin-top:8px" onclick="saveBrand()">Сохранить стиль</button>
+    </div>
+    <div class="card">
+      <h2>Студия обложек</h2>
+      <div class="hint">Напиши, что понравилось / что хочешь на картинке — ИИ сделает обложку в вашем стиле. Можно уточнять: «сделай теплее», «другой ракурс».</div>
+      <div id="studioThread" style="display:flex;flex-direction:column;gap:14px;margin:12px 0"></div>
+      <div class="row">
+        <input id="studio-in" placeholder="Напр.: как тот пост про чекапы, только светлее и с врачом у окна" style="flex:4">
+        <button class="btn primary" onclick="studioSend()">Сгенерировать</button>
+      </div>
+    </div>`;
+  const inp = $("studio-in"); if (inp) inp.addEventListener("keydown", (e) => { if (e.key === "Enter") studioSend(); });
+  renderThread();
+}
+async function saveBrand() {
+  const r = await api("brand", { region_id: CUR_REGION, style: $("brand-style").value.trim() });
+  toast(r.ok ? "Стиль сохранён ✓" : "Не удалось");
+}
+function renderThread() {
+  const box = $("studioThread"); if (!box) return;
+  const t = window.__studioThread || [];
+  box.innerHTML = t.length ? t.map((m, i) => `
+    <div>
+      <div style="font-size:14px;color:var(--muted)">🗨 ${esc(m.text)}</div>
+      ${m.image ? `<img src="data:image/png;base64,${m.image}" style="max-width:300px;border-radius:12px;margin-top:6px;display:block">
+        <div class="actions"><button class="btn ghost sm" onclick="studioToPlan(${i})">→ В план как обложку</button></div>` : `<div class="hint">рисую…</div>`}
+    </div>`).join("") : `<div class="empty">Пока пусто — напиши идею ниже ↓</div>`;
+}
+async function studioSend() {
+  const text = $("studio-in").value.trim();
+  if (!text) return;
+  $("studio-in").value = "";
+  window.__studioThread.push({ text, image: "" }); renderThread();
+  toast("Рисую… 15–30 сек");
+  const r = await api("studio/generate", { region_id: CUR_REGION, text });
+  const item = window.__studioThread[window.__studioThread.length - 1];
+  if (!r.ok) { item.text += "  (ошибка: " + (r.error || "не удалось") + ")"; toast(r.error || "Не удалось"); }
+  else { item.image = r.image_b64; toast("Готово ✓"); }
+  renderThread();
+}
+function studioToPlan(i) {
+  const m = window.__studioThread[i]; if (!m || !m.image) return;
+  window.__planImageData = m.image;
+  switchTab("plan");
+  setTimeout(() => toast("Обложка перенесена в план ✓ — заполни текст и дату"), 80);
+}
 
 /* ---------- Команда (владелец) ---------- */
 async function renderTeam() {
