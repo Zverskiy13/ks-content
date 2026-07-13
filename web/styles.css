@@ -1,0 +1,73 @@
+:root{
+  --red:#E1191C; --ink:#1a1c22; --muted:#7a808c; --line:#e7e9ee; --bg:#f4f6f9;
+  --ok:#1a9e5f; --warn:#c47f00; --card:#fff;
+}
+*{box-sizing:border-box}
+body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;color:var(--ink);background:var(--bg)}
+.hidden{display:none!important}
+button{font-family:inherit;cursor:pointer}
+input,select,textarea{font-family:inherit;font-size:15px;padding:10px 12px;border:1px solid var(--line);border-radius:9px;background:#fff;color:var(--ink);outline:none}
+input:focus,textarea:focus,select:focus{border-color:var(--red)}
+.btn{border:none;border-radius:9px;padding:10px 16px;font-size:15px;font-weight:600;background:#eef0f4;color:var(--ink)}
+.btn.primary{background:var(--red);color:#fff}
+.btn.ghost{background:#fff;border:1px solid var(--line)}
+.btn.sm{padding:7px 12px;font-size:14px}
+.btn:active{transform:translateY(1px)}
+
+/* Вход */
+.login{min-height:100vh;display:flex;align-items:center;justify-content:center;background:linear-gradient(160deg,#fff,#eef1f6)}
+.login-card{width:340px;background:#fff;border:1px solid var(--line);border-radius:16px;padding:28px;box-shadow:0 10px 40px rgba(20,25,40,.08);display:flex;flex-direction:column;gap:12px}
+.brand{font-size:22px;font-weight:800;color:var(--red);text-align:center}
+.brand-sub{font-size:13px;color:var(--muted);text-align:center;margin-bottom:8px}
+.err{color:var(--red);font-size:13px;min-height:16px;text-align:center}
+
+/* Каркас */
+.topbar{display:flex;align-items:center;justify-content:space-between;background:#fff;border-bottom:1px solid var(--line);padding:12px 22px;position:sticky;top:0;z-index:10}
+.logo{font-weight:800}.logo span{color:var(--red)}
+.top-right{display:flex;align-items:center;gap:12px}
+.whoami{font-size:13px;color:var(--muted)}
+.tabs{display:flex;gap:6px;padding:12px 22px 0;background:#fff;border-bottom:1px solid var(--line)}
+.tab{background:none;border:none;border-bottom:3px solid transparent;padding:10px 14px;font-size:15px;font-weight:600;color:var(--muted)}
+.tab.on{color:var(--ink);border-bottom-color:var(--red)}
+.content{max-width:1000px;margin:0 auto;padding:22px}
+.pane{display:flex;flex-direction:column;gap:16px}
+
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px}
+.card h2{margin:0 0 4px;font-size:17px}
+.hint{color:var(--muted);font-size:13px;margin-bottom:10px}
+.row{display:flex;gap:10px;flex-wrap:wrap}
+.row>*{flex:1;min-width:120px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+@media(max-width:760px){.grid{grid-template-columns:1fr}}
+
+.badge{display:inline-block;padding:2px 8px;border-radius:20px;font-size:12px;font-weight:700}
+.badge.ok{background:#e7f6ee;color:var(--ok)}
+.badge.bad{background:#fdecec;color:var(--red)}
+.badge.org{background:#eef1f6;color:var(--muted)}
+.badge.ad{background:#fdf3e3;color:var(--warn)}
+.badge.st-draft{background:#eef1f6;color:var(--muted)}
+.badge.st-ready{background:#e7f6ee;color:var(--ok)}
+.badge.st-published{background:#e8eefc;color:#2b5fd0}
+
+.idea{border:1px solid var(--line);border-radius:12px;padding:14px;background:#fff}
+.idea .theme{font-weight:700;margin-bottom:4px}
+.idea .meta{font-size:13px;color:var(--muted);margin-bottom:8px}
+.idea .line{font-size:14px;margin:2px 0}
+.idea .apps{font-size:14px;margin-top:6px}
+.idea .apps div{margin:2px 0}
+.idea .actions{display:flex;gap:8px;margin-top:10px}
+.link{color:var(--red);font-size:13px;cursor:pointer;background:none;border:none;padding:0}
+
+.plats{display:flex;gap:8px;flex-wrap:wrap;margin:6px 0}
+.plat{display:flex;align-items:center;gap:6px;border:1px solid var(--line);border-radius:9px;padding:7px 11px;font-size:14px;cursor:pointer;user-select:none;background:#fff}
+.plat.on{border-color:var(--red);background:#fff5f5}
+.plat.dis{opacity:.55;cursor:not-allowed}
+.plat small{color:var(--warn)}
+
+table{width:100%;border-collapse:collapse}
+th,td{text-align:left;padding:9px 8px;border-bottom:1px solid var(--line);font-size:14px;vertical-align:top}
+th{color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.03em}
+
+.toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(20px);background:#1a1c22;color:#fff;padding:11px 18px;border-radius:10px;font-size:14px;opacity:0;pointer-events:none;transition:.2s;z-index:100}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+.empty{color:var(--muted);font-size:14px;padding:8px 2px}
