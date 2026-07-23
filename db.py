@@ -136,6 +136,12 @@ ALTER TABLE cp_plan ADD COLUMN IF NOT EXISTS review_note text;
 ALTER TABLE cp_plan ADD COLUMN IF NOT EXISTS reviewed_by text;
 ALTER TABLE cp_plan ADD COLUMN IF NOT EXISTS reviewed_at timestamptz;
 ALTER TABLE cp_plan ADD COLUMN IF NOT EXISTS submitted_at timestamptz;
+-- охваты опубликованных постов (VK)
+ALTER TABLE cp_plan ADD COLUMN IF NOT EXISTS m_views    int;
+ALTER TABLE cp_plan ADD COLUMN IF NOT EXISTS m_likes    int;
+ALTER TABLE cp_plan ADD COLUMN IF NOT EXISTS m_reposts  int;
+ALTER TABLE cp_plan ADD COLUMN IF NOT EXISTS m_comments int;
+ALTER TABLE cp_plan ADD COLUMN IF NOT EXISTS metrics_at timestamptz;
 -- фирменный стиль (одна строка настроек) и рубрики
 CREATE TABLE IF NOT EXISTS cp_brand (
     id            smallint PRIMARY KEY DEFAULT 1,

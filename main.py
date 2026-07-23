@@ -36,6 +36,7 @@ REGIONS_SEED = ["Москва", "Астрахань", "Калмыкия", "КБ�
 PLATFORMS = [
     {"key": "vk", "name": "VK", "active": True, "note": ""},
     {"key": "ok", "name": "Одноклассники", "active": True, "note": ""},
+    {"key": "tg", "name": "Telegram", "active": True, "note": ""},
     {"key": "instagram", "name": "Instagram", "active": False, "note": "недоступно в РФ"},
     {"key": "tiktok", "name": "TikTok", "active": False, "note": "недоступно в РФ"},
 ]
@@ -730,6 +731,23 @@ def _ok_publish(token, gid, text):
     return "https://ok.ru/group/" + str(gid)
 
 
+def _tg_publish(token, chat, text):
+    """Публикация в Telegram-канал через бота. Бот должен быть админом канала."""
+    chat = str(chat or "").strip()
+    if not (token and chat):
+        raise RuntimeError("Telegram не настроен: нужен токен бота и @канал или ID")
+    if chat.lstrip("-").isdigit() is False and not chat.startswith("@"):
+        chat = "@" + chat
+    r = requests.post(f"https://api.telegram.org/bot{token}/sendMessage",
+                      json={"chat_id": chat, "text": text, "disable_web_page_preview": False}, timeout=30).json()
+    if not r.get("ok"):
+        raise RuntimeError("Telegram: " + str(r.get("description", "ошибка"))[:110])
+    mid = (r.get("result") or {}).get("message_id")
+    if chat.startswith("@") and mid:
+        return f"https://t.me/{chat.lstrip('@')}/{mid}"
+    return "https://t.me/" + chat.lstrip("@")
+
+
 def _publish_row(row):
     """Публикует запись плана в её площадки. Возвращает (url|'', error|'')."""
     urls, errs = [], []
@@ -745,11 +763,59 @@ def _publish_row(row):
                 urls.append(_vk_publish(acc["token"], acc["group_id"], text))
             elif plat == "ok":
                 urls.append(_ok_publish(acc["token"], acc["group_id"], text))
+            elif plat == "tg":
+                urls.append(_tg_publish(acc["token"], acc["group_id"], text))
             else:
                 errs.append(f"{plat}: автопостинг не поддержан")
         except Exception as e:
             errs.append(f"{plat}: {str(e)[:110]}")
     return (urls[0] if urls else ""), ("; ".join(errs) if errs else "")
+
+
+# ---------------- Контролёр охватов (VK) ----------------
+def _parse_vk_wall(url):
+    m = re.search(r"wall(-?\d+)_(\d+)", url or "")
+    return (m.group(1), m.group(2)) if m else (None, None)
+
+
+def _vk_post_stats(token, owner_id, post_id):
+    r = requests.get(VK_API + "wall.getById",
+                     params={"posts": f"{owner_id}_{post_id}", "access_token": token, "v": VK_V}, timeout=30).json()
+    if "error" in r:
+        raise RuntimeError(r["error"].get("error_msg", "VK error"))
+    items = r.get("response") or []
+    if isinstance(items, dict):
+        items = items.get("items", [])
+    if not items:
+        return None
+    it = items[0]
+    return {"views": (it.get("views") or {}).get("count", 0),
+            "likes": (it.get("likes") or {}).get("count", 0),
+            "reposts": (it.get("reposts") or {}).get("count", 0),
+            "comments": (it.get("comments") or {}).get("count", 0)}
+
+
+def _refresh_metrics(days=45, limit=300):
+    rows = db.query(
+        "SELECT id,region_id,published_url FROM cp_plan "
+        "WHERE status='published' AND published_url LIKE '%%vk.com/wall%%' "
+        "AND (published_at IS NULL OR published_at > now() - make_interval(days => %s)) "
+        "ORDER BY published_at DESC NULLS LAST LIMIT %s", (int(days), int(limit)))
+    for r in rows:
+        owner, pid = _parse_vk_wall(r["published_url"])
+        if not owner:
+            continue
+        acc = db.query_one("SELECT token FROM cp_social WHERE region_id=%s AND platform='vk'", (r["region_id"],))
+        token = (acc or {}).get("token") or _vk_token()
+        if not token:
+            continue
+        try:
+            st = _vk_post_stats(token, owner, pid)
+        except Exception:
+            continue
+        if st:
+            db.execute("UPDATE cp_plan SET m_views=%s,m_likes=%s,m_reposts=%s,m_comments=%s,metrics_at=now() WHERE id=%s",
+                       (st["views"], st["likes"], st["reposts"], st["comments"], r["id"]))
 
 
 @app.post("/api/plan/publish")
@@ -792,16 +858,60 @@ def _due_publish():
 
 
 def _scheduler_loop():
+    tick = 0
     while True:
         try:
             if db.available():
                 _due_publish()
+                if tick % 30 == 0:          # сбор охватов раз в ~30 минут
+                    _refresh_metrics()
         except Exception as e:
             print("scheduler:", e)
+        tick += 1
         time.sleep(60)
 
 
 threading.Thread(target=_scheduler_loop, daemon=True).start()
+
+
+# ---------------- Аналитика охватов ----------------
+@app.get("/api/analytics")
+def analytics(region_id: int | None = None, user=Depends(current_user)):
+    rid = region_id if user["role"] == "owner" else user.get("region_id")
+    clause, params = "p.status='published'", []
+    if rid:
+        clause += " AND p.region_id=%s"
+        params.append(int(rid))
+    rows = db.query(
+        "SELECT p.id,p.title,p.region_id,p.rubric_id,p.platforms,p.published_url,p.published_at,"
+        "p.m_views,p.m_likes,p.m_reposts,p.m_comments,p.metrics_at, r.name AS region "
+        "FROM cp_plan p LEFT JOIN cp_regions r ON r.id=p.region_id "
+        "WHERE " + clause + " ORDER BY p.published_at DESC NULLS LAST LIMIT 300", tuple(params))
+    tot = {"posts": 0, "views": 0, "likes": 0, "reposts": 0, "comments": 0}
+    by_rubric = {}
+    for x in rows:
+        x["published_at"] = x["published_at"].isoformat() if x.get("published_at") else ""
+        x["metrics_at"] = x["metrics_at"].isoformat() if x.get("metrics_at") else ""
+        tot["posts"] += 1
+        for k in ("views", "likes", "reposts", "comments"):
+            tot[k] += (x.get("m_" + k) or 0)
+        rb = x.get("rubric_id")
+        a = by_rubric.setdefault(rb, {"rubric_id": rb, "posts": 0, "views": 0, "likes": 0})
+        a["posts"] += 1
+        a["views"] += (x.get("m_views") or 0)
+        a["likes"] += (x.get("m_likes") or 0)
+    return {"ok": True, "posts": rows, "total": tot, "by_rubric": list(by_rubric.values())}
+
+
+@app.post("/api/analytics/refresh")
+def analytics_refresh(user=Depends(current_user)):
+    if not _vk_token() and not db.query_one("SELECT id FROM cp_social WHERE platform='vk' LIMIT 1"):
+        return {"ok": False, "error": "нет VK-токена для сбора охватов"}
+    try:
+        _refresh_metrics()
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:120]}
+    return {"ok": True}
 
 
 # ---------------- Фирменный стиль и рубрики ----------------

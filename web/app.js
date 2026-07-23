@@ -54,9 +54,47 @@ function renderCurrent() {
   if (TAB === "viral") renderViral();
   else if (TAB === "scout") renderScout();
   else if (TAB === "plan") renderPlan();
+  else if (TAB === "analytics") renderAnalytics();
   else if (TAB === "mod") renderModeration();
   else renderTeam();
 }
+async function renderAnalytics() {
+  $("pane-analytics").innerHTML = `
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+        <h2 style="margin:0">Результаты публикаций</h2>
+        <button class="btn ghost sm" onclick="refreshMetrics()">Обновить охваты</button>
+      </div>
+      <div class="hint">Охваты собираются автоматически по постам VK (примерно раз в 30 минут). Кнопкой можно обновить сейчас.</div>
+      <div id="anTot" class="row" style="gap:8px;flex-wrap:wrap;margin-top:8px"></div>
+    </div>
+    <div class="card"><h2>По рубрикам</h2><div id="anRub"><div class="empty">Загружаю…</div></div></div>
+    <div class="card"><h2>Посты</h2><div id="anList"><div class="empty">Загружаю…</div></div></div>`;
+  loadAnalytics();
+}
+async function loadAnalytics() {
+  const r = await api("analytics");
+  const t = r.total || {};
+  const num = (v) => (v || 0).toLocaleString("ru-RU");
+  const metric = (label, val) => `<div class="card" style="flex:1;min-width:110px;text-align:center;padding:10px"><div style="font-size:12px;color:var(--muted)">${label}</div><div style="font-size:22px;font-weight:800">${num(val)}</div></div>`;
+  const tb = $("anTot"); if (tb) tb.innerHTML = metric("Постов", t.posts) + metric("Просмотры", t.views) + metric("Лайки", t.likes) + metric("Репосты", t.reposts) + metric("Комментарии", t.comments);
+  const rub = $("anRub");
+  if (rub) {
+    const list = (r.by_rubric || []).filter((x) => x.posts).sort((a, b) => (b.views || 0) - (a.views || 0));
+    rub.innerHTML = list.length ? `<table><thead><tr><th>Рубрика</th><th>Постов</th><th>Просмотры</th><th>Лайки</th></tr></thead><tbody>${list.map((x) => `<tr><td>${esc(rubName(x.rubric_id) || "без рубрики")}</td><td>${x.posts}</td><td>${num(x.views)}</td><td>${num(x.likes)}</td></tr>`).join("")}</tbody></table>` : `<div class="empty">Пока нет данных.</div>`;
+  }
+  const box = $("anList");
+  if (box) {
+    const list = (r.posts || []);
+    const isOwner = PROFILE.role === "owner";
+    box.innerHTML = list.length ? `<table><thead><tr><th>Дата</th>${isOwner ? "<th>Регион</th>" : ""}<th>Пост</th><th>Просм.</th><th>Лайки</th><th>Реп.</th><th>Комм.</th></tr></thead><tbody>${list.map((p) => {
+      const d = (p.published_at || "").slice(0, 10);
+      const link = p.published_url ? `<a href="${esc(p.published_url)}" target="_blank" rel="noopener">${esc(p.title)}</a>` : esc(p.title);
+      return `<tr><td>${esc(d)}</td>${isOwner ? `<td>${esc(p.region || "—")}</td>` : ""}<td>${link}${p.rubric_id ? `<div style="font-size:12px;color:var(--muted)">${esc(rubName(p.rubric_id))}</div>` : ""}</td><td>${num(p.m_views)}</td><td>${num(p.m_likes)}</td><td>${num(p.m_reposts)}</td><td>${num(p.m_comments)}</td></tr>`;
+    }).join("")}</tbody></table>` : `<div class="empty">Опубликованных постов ещё нет.</div>`;
+  }
+}
+async function refreshMetrics() { toast("Собираю охваты…"); const r = await api("analytics/refresh", {}); toast(r.ok ? "Обновлено ✓" : (r.error || "Не удалось")); loadAnalytics(); }
 const ST_NAME = { draft: "Черновик", pending: "На согласовании", approved: "Одобрено", rejected: "Отклонено", published: "Опубликовано" };
 function rubName(id) { const r = (window.RUBRICS || []).find((x) => x.id === id); return r ? r.title : ""; }
 
@@ -214,12 +252,12 @@ async function renderPlan() {
   $("pane-plan").innerHTML = `
     <div class="card">
       <h2>Подключение соцсетей (автопостинг)</h2>
-      <div class="hint">Подключи сообщества VK/OK, чтобы платформа публиковала по расписанию. VK: токен сообщества с правом «Управление» + ID группы. OK: токен приложения + ID группы (нужны OK_APP_KEY/OK_APP_SECRET на сервере).</div>
+      <div class="hint">Подключи сообщества, чтобы платформа публиковала по расписанию. VK: токен сообщества с правом «Управление» + ID группы. OK: токен приложения + ID группы (нужны OK_APP_KEY/OK_APP_SECRET на сервере). Telegram: токен бота от @BotFather + @канал (бот должен быть админом канала).</div>
       <div id="socialBox"><div class="empty">Загружаю…</div></div>
       <div class="row" style="margin-top:8px">
-        <select id="sc-plat"><option value="vk">VK</option><option value="ok">OK</option></select>
-        <input id="sc-token" placeholder="Токен доступа" style="flex:2">
-        <input id="sc-gid" placeholder="ID группы (число)" style="flex:1">
+        <select id="sc-plat"><option value="vk">VK</option><option value="ok">OK</option><option value="tg">Telegram</option></select>
+        <input id="sc-token" placeholder="Токен доступа / бота" style="flex:2">
+        <input id="sc-gid" placeholder="ID группы или @канал" style="flex:1">
         <button class="btn ghost" onclick="connectSocial()">Подключить</button>
       </div>
     </div>
