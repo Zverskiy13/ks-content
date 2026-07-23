@@ -155,14 +155,16 @@ def _startup():
         db.execute("INSERT INTO cp_users(email,name,role,region_id,salt,pass_hash) "
                    "VALUES(%s,%s,'owner',NULL,%s,%s)", (oe, "Владелец", salt, ph))
         print(f"CP: создан владелец {oe}")
-    # миграция старого статуса 'ready' → 'pending' (теперь требуется одобрение владельца)
-    db.execute("UPDATE cp_plan SET status='pending', submitted_at=COALESCE(submitted_at, now()) WHERE status='ready'")
-    # фирменный стиль и рубрики — дефолты при первом старте
-    db.execute("INSERT INTO cp_brand(id) VALUES(1) ON CONFLICT (id) DO NOTHING")
-    if not db.query_one("SELECT id FROM cp_rubrics LIMIT 1"):
-        for title, hint in RUBRICS_SEED:
-            db.execute("INSERT INTO cp_rubrics(title,hint) VALUES(%s,%s)", (title, hint))
-        print("CP: засеяны рубрики")
+    # сиды и миграции данных — не должны ронять старт приложения
+    try:
+        db.execute("UPDATE cp_plan SET status='pending', submitted_at=COALESCE(submitted_at, now()) WHERE status='ready'")
+        db.execute("INSERT INTO cp_brand(id) VALUES(1) ON CONFLICT (id) DO NOTHING")
+        if not db.query_one("SELECT id FROM cp_rubrics LIMIT 1"):
+            for title, hint in RUBRICS_SEED:
+                db.execute("INSERT INTO cp_rubrics(title,hint) VALUES(%s,%s)", (title, hint))
+            print("CP: засеяны рубрики")
+    except Exception as e:
+        print("CP: сиды пропущены:", str(e)[:160])
 
 
 # ---------------- Auth ----------------

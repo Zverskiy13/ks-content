@@ -166,6 +166,10 @@ CREATE TABLE IF NOT EXISTS cp_brand (
     updated_at    timestamptz NOT NULL DEFAULT now(),
     CHECK (id = 1)
 );
+-- миграция старой таблицы cp_brand без колонки id (осталась от раннего деплоя)
+ALTER TABLE cp_brand ADD COLUMN IF NOT EXISTS id smallint;
+UPDATE cp_brand SET id=1 WHERE id IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS cp_brand_id_uniq ON cp_brand(id);
 ALTER TABLE cp_brand ADD COLUMN IF NOT EXISTS default_cta text NOT NULL DEFAULT '';
 ALTER TABLE cp_brand ADD COLUMN IF NOT EXISTS guidelines  text NOT NULL DEFAULT '';
 CREATE TABLE IF NOT EXISTS cp_rubrics (
