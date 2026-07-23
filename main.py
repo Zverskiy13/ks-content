@@ -1045,6 +1045,7 @@ class GenImgIn(BaseModel):
     title: str = ""
     text: str = ""
     topic: str = ""
+    image_desc: str = ""
     rubric_id: int | None = None
 
 
@@ -1055,9 +1056,11 @@ def generate_image(b: GenImgIn, user=Depends(current_user)):
         return {"ok": False, "error": "OPENAI_API_KEY не задан на сервере"}
     brand = db.query_one("SELECT name,primary_color,accent_color FROM cp_brand WHERE id=1") or {}
     rub = db.query_one("SELECT title FROM cp_rubrics WHERE id=%s", (b.rubric_id,)) if b.rubric_id else None
-    theme = ((b.topic or b.title or (rub or {}).get("title") or "медицина, забота о здоровье")).strip()[:300]
+    desc = (b.image_desc or "").strip()[:600]
+    theme = (desc or b.topic or b.title or (rub or {}).get("title") or "медицина, забота о здоровье").strip()[:600]
     prompt = (f"Профессиональная обложка для поста медицинской клиники «{brand.get('name') or 'Клиники Столицы'}». "
-              f"Тема: {theme}. Чистый современный минималистичный медицинский стиль, аккуратно, дружелюбно, вызывает доверие. "
+              f"{'Сюжет по описанию оператора: ' if desc else 'Тема: '}{theme}. "
+              "Чистый современный минималистичный медицинский стиль, аккуратно, дружелюбно, вызывает доверие. "
               f"Фирменные цвета: {brand.get('primary_color') or '#C0392B'} и {brand.get('accent_color') or '#1F9D55'}. "
               "Без текста и надписей на изображении, без сторонних логотипов. Высокое качество.")
     try:

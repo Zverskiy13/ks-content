@@ -275,6 +275,7 @@ async function renderPlan() {
         <button class="btn ghost" onclick="generatePost()">✨ Сгенерировать пост</button>
       </div>
       <input id="p-cta" placeholder="Ссылка на запись (по желанию — иначе возьмётся общая из бренда)" style="width:100%;margin-bottom:8px">
+      <input id="p-imgdesc" placeholder="Описание картинки для ИИ (по желанию: что изобразить)" style="width:100%;margin-bottom:6px">
       <div class="row" style="margin-bottom:6px">
         <button class="btn ghost" onclick="genImage()">🎨 Сгенерировать картинку</button>
         <button class="btn ghost" onclick="uploadImage()">📎 Загрузить картинку</button>
@@ -370,6 +371,7 @@ function _pickImage(cb) {
 async function genImage() {
   toast("Рисую картинку… (10–20 сек)");
   const r = await api("generate/image", {
+    image_desc: ($("p-imgdesc") ? $("p-imgdesc").value.trim() : ""),
     title: ($("p-title") ? $("p-title").value.trim() : ""),
     text: ($("p-text") ? $("p-text").value.trim() : ""),
     topic: ($("p-topic") ? $("p-topic").value.trim() : ""),
