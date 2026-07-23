@@ -300,6 +300,16 @@ class PlanIn(BaseModel):
     compliance: dict | None = None
     rubric_id: int | None = None
     cta_url: str = ""
+    image_b64: str = ""
+
+
+def _split_data_url(s):
+    s = s or ""
+    if s.startswith("data:"):
+        head, _, b64 = s.partition(",")
+        mime = head[5:].split(";")[0] or "image/png"
+        return b64, mime
+    return s, "image/png"
 
 
 @app.post("/api/plan/add")
@@ -314,13 +324,42 @@ def plan_add(b: PlanIn, user=Depends(current_user)):
     # новый пост всегда стартует как черновик — публикация только после одобрения владельцем
     st = b.status if b.status in ("draft", "pending") else "draft"
     token = secrets.token_urlsafe(6)
+    img_b64, img_mime = _split_data_url(b.image_b64) if b.image_b64 else ("", "")
     row = db.query_one(
-        "INSERT INTO cp_plan(region_id,title,text,platforms,plan_date,plan_time,status,idea_id,compliance,rubric_id,submitted_at,cta_url,link_token) "
-        "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
+        "INSERT INTO cp_plan(region_id,title,text,platforms,plan_date,plan_time,status,idea_id,compliance,rubric_id,submitted_at,cta_url,link_token,image_b64,image_mime) "
+        "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
         (rid, b.title[:200], b.text, plats, d, (b.time or "")[:5], st, b.idea_id,
          db.jval(b.compliance or {}), b.rubric_id, (dt.datetime.now() if st == "pending" else None),
-         (b.cta_url or "").strip()[:500], token))
+         (b.cta_url or "").strip()[:500], token, (img_b64 or None), (img_mime or None)))
     return {"ok": True, "id": row["id"]}
+
+
+class PlanImageIn(BaseModel):
+    id: int
+    image_b64: str = ""
+
+
+@app.post("/api/plan/image")
+def plan_image(b: PlanImageIn, user=Depends(current_user)):
+    img_b64, img_mime = _split_data_url(b.image_b64) if b.image_b64 else (None, None)
+    if user["role"] == "owner":
+        db.execute("UPDATE cp_plan SET image_b64=%s,image_mime=%s WHERE id=%s", (img_b64, img_mime, b.id))
+    else:
+        db.execute("UPDATE cp_plan SET image_b64=%s,image_mime=%s WHERE id=%s AND region_id=%s",
+                   (img_b64, img_mime, b.id, user["region_id"]))
+    return {"ok": True}
+
+
+@app.get("/api/plan/{pid}/image")
+def plan_image_get(pid: int):
+    row = db.query_one("SELECT image_b64,image_mime FROM cp_plan WHERE id=%s", (pid,))
+    if not row or not row.get("image_b64"):
+        raise HTTPException(404, "нет изображения")
+    try:
+        data = base64.b64decode(row["image_b64"])
+    except Exception:
+        raise HTTPException(404, "битое изображение")
+    return Response(content=data, media_type=(row.get("image_mime") or "image/png"))
 
 
 @app.get("/r/{token}")
@@ -335,7 +374,7 @@ def redirect_link(token: str):
 @app.get("/api/plan")
 def plan_list(region_id: int | None = None, user=Depends(current_user)):
     rid = region_for(user, region_id)
-    rows = db.query("SELECT id,title,text,platforms,plan_date,plan_time,status,idea_id,rubric_id,review_note,created_at,published_url,publish_error "
+    rows = db.query("SELECT id,title,text,platforms,plan_date,plan_time,status,idea_id,rubric_id,review_note,created_at,published_url,publish_error,(image_b64 IS NOT NULL) AS has_image "
                     "FROM cp_plan WHERE region_id=%s ORDER BY plan_date NULLS LAST, plan_time", (rid,))
     for r in rows:
         r["plan_date"] = r["plan_date"].isoformat() if r.get("plan_date") else ""
@@ -727,12 +766,33 @@ def _post_text(row):
     return txt
 
 
-def _vk_publish(token, group_id, text):
+def _vk_wall_photo(token, gid, img_bytes):
+    up = requests.get(VK_API + "photos.getWallUploadServer",
+                      params={"group_id": gid, "access_token": token, "v": VK_V}, timeout=30).json()
+    if "error" in up:
+        raise RuntimeError(up["error"].get("error_msg", "VK upload server"))
+    upl = requests.post(up["response"]["upload_url"],
+                        files={"photo": ("image.jpg", img_bytes, "image/jpeg")}, timeout=60).json()
+    saved = requests.get(VK_API + "photos.saveWallPhoto",
+                         params={"group_id": gid, "photo": upl.get("photo"), "server": upl.get("server"),
+                                 "hash": upl.get("hash"), "access_token": token, "v": VK_V}, timeout=30).json()
+    if "error" in saved:
+        raise RuntimeError(saved["error"].get("error_msg", "VK save photo"))
+    p = saved["response"][0]
+    return f"photo{p['owner_id']}_{p['id']}"
+
+
+def _vk_publish(token, group_id, text, img_bytes=None):
     gid = str(group_id).lstrip("-").strip()
     if not gid:
         raise RuntimeError("не указан ID сообщества VK")
-    r = requests.get(VK_API + "wall.post", params={
-        "owner_id": f"-{gid}", "from_group": 1, "message": text, "access_token": token, "v": VK_V}, timeout=30).json()
+    params = {"owner_id": f"-{gid}", "from_group": 1, "message": text, "access_token": token, "v": VK_V}
+    if img_bytes:
+        try:
+            params["attachments"] = _vk_wall_photo(token, gid, img_bytes)
+        except Exception:
+            pass  # если фото не загрузилось — публикуем текстом
+    r = requests.get(VK_API + "wall.post", params=params, timeout=60).json()
     if "error" in r:
         raise RuntimeError(r["error"].get("error_msg", "VK error"))
     pid = r.get("response", {}).get("post_id")
@@ -756,18 +816,29 @@ def _ok_publish(token, gid, text):
     return "https://ok.ru/group/" + str(gid)
 
 
-def _tg_publish(token, chat, text):
+def _tg_publish(token, chat, text, img_bytes=None):
     """Публикация в Telegram-канал через бота. Бот должен быть админом канала."""
     chat = str(chat or "").strip()
     if not (token and chat):
         raise RuntimeError("Telegram не настроен: нужен токен бота и @канал или ID")
     if chat.lstrip("-").isdigit() is False and not chat.startswith("@"):
         chat = "@" + chat
-    r = requests.post(f"https://api.telegram.org/bot{token}/sendMessage",
-                      json={"chat_id": chat, "text": text, "disable_web_page_preview": False}, timeout=30).json()
-    if not r.get("ok"):
-        raise RuntimeError("Telegram: " + str(r.get("description", "ошибка"))[:110])
-    mid = (r.get("result") or {}).get("message_id")
+    if img_bytes:
+        r = requests.post(f"https://api.telegram.org/bot{token}/sendPhoto",
+                          data={"chat_id": chat, "caption": text[:1024]},
+                          files={"photo": ("image.jpg", img_bytes, "image/jpeg")}, timeout=60).json()
+        if not r.get("ok"):
+            raise RuntimeError("Telegram: " + str(r.get("description", "ошибка"))[:110])
+        mid = (r.get("result") or {}).get("message_id")
+        if len(text) > 1024:   # длинный текст — отдельным сообщением
+            requests.post(f"https://api.telegram.org/bot{token}/sendMessage",
+                          json={"chat_id": chat, "text": text}, timeout=30)
+    else:
+        r = requests.post(f"https://api.telegram.org/bot{token}/sendMessage",
+                          json={"chat_id": chat, "text": text, "disable_web_page_preview": False}, timeout=30).json()
+        if not r.get("ok"):
+            raise RuntimeError("Telegram: " + str(r.get("description", "ошибка"))[:110])
+        mid = (r.get("result") or {}).get("message_id")
     if chat.startswith("@") and mid:
         return f"https://t.me/{chat.lstrip('@')}/{mid}"
     return "https://t.me/" + chat.lstrip("@")
@@ -777,6 +848,12 @@ def _publish_row(row):
     """Публикует запись плана в её площадки. Возвращает (url|'', error|'')."""
     urls, errs = [], []
     text = _post_text(row)
+    img_bytes = None
+    if row.get("image_b64"):
+        try:
+            img_bytes = base64.b64decode(row["image_b64"])
+        except Exception:
+            img_bytes = None
     for plat in (row.get("platforms") or []):
         acc = db.query_one("SELECT token,group_id FROM cp_social WHERE region_id=%s AND platform=%s",
                            (row["region_id"], plat))
@@ -785,11 +862,11 @@ def _publish_row(row):
             continue
         try:
             if plat == "vk":
-                urls.append(_vk_publish(acc["token"], acc["group_id"], text))
+                urls.append(_vk_publish(acc["token"], acc["group_id"], text, img_bytes))
             elif plat == "ok":
                 urls.append(_ok_publish(acc["token"], acc["group_id"], text))
             elif plat == "tg":
-                urls.append(_tg_publish(acc["token"], acc["group_id"], text))
+                urls.append(_tg_publish(acc["token"], acc["group_id"], text, img_bytes))
             else:
                 errs.append(f"{plat}: автопостинг не поддержан")
         except Exception as e:
@@ -960,6 +1037,43 @@ def generate(b: GenIn, user=Depends(current_user)):
     except Exception as e:
         return {"ok": False, "error": "генерация: " + str(e)[:120]}
     return {"ok": True, "title": (data.get("title") or "")[:200], "text": data.get("text") or ""}
+
+
+class GenImgIn(BaseModel):
+    title: str = ""
+    text: str = ""
+    topic: str = ""
+    rubric_id: int | None = None
+
+
+@app.post("/api/generate/image")
+def generate_image(b: GenImgIn, user=Depends(current_user)):
+    key = os.environ.get("OPENAI_API_KEY", "")
+    if not key:
+        return {"ok": False, "error": "OPENAI_API_KEY не задан на сервере"}
+    brand = db.query_one("SELECT name,primary_color,accent_color FROM cp_brand WHERE id=1") or {}
+    rub = db.query_one("SELECT title FROM cp_rubrics WHERE id=%s", (b.rubric_id,)) if b.rubric_id else None
+    theme = ((b.topic or b.title or (rub or {}).get("title") or "медицина, забота о здоровье")).strip()[:300]
+    prompt = (f"Профессиональная обложка для поста медицинской клиники «{brand.get('name') or 'Клиники Столицы'}». "
+              f"Тема: {theme}. Чистый современный минималистичный медицинский стиль, аккуратно, дружелюбно, вызывает доверие. "
+              f"Фирменные цвета: {brand.get('primary_color') or '#C0392B'} и {brand.get('accent_color') or '#1F9D55'}. "
+              "Без текста и надписей на изображении, без сторонних логотипов. Высокое качество.")
+    try:
+        r = requests.post("https://api.openai.com/v1/images/generations",
+                          headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"},
+                          json={"model": "gpt-image-1", "prompt": prompt, "size": "1024x1024", "n": 1}, timeout=120)
+        if r.status_code != 200:
+            return {"ok": False, "error": f"openai {r.status_code}: {r.text[:120]}"}
+        d = (r.json().get("data") or [{}])[0]
+        b64 = d.get("b64_json") or ""
+        if not b64 and d.get("url"):
+            img = requests.get(d["url"], timeout=60)
+            b64 = base64.b64encode(img.content).decode("ascii")
+        if not b64:
+            return {"ok": False, "error": "пустой ответ OpenAI"}
+    except Exception as e:
+        return {"ok": False, "error": "генерация картинки: " + str(e)[:120]}
+    return {"ok": True, "image_b64": "data:image/png;base64," + b64}
 
 
 # ---------------- Аналитика охватов ----------------

@@ -147,6 +147,9 @@ ALTER TABLE cp_plan ADD COLUMN IF NOT EXISTS cta_url    text;
 ALTER TABLE cp_plan ADD COLUMN IF NOT EXISTS link_token text;
 ALTER TABLE cp_plan ADD COLUMN IF NOT EXISTS clicks     int NOT NULL DEFAULT 0;
 CREATE UNIQUE INDEX IF NOT EXISTS cp_plan_link ON cp_plan(link_token) WHERE link_token IS NOT NULL;
+-- картинка к посту (base64 без префикса data:)
+ALTER TABLE cp_plan ADD COLUMN IF NOT EXISTS image_b64  text;
+ALTER TABLE cp_plan ADD COLUMN IF NOT EXISTS image_mime text;
 -- фирменный стиль (одна строка настроек) и рубрики
 CREATE TABLE IF NOT EXISTS cp_brand (
     id            smallint PRIMARY KEY DEFAULT 1,

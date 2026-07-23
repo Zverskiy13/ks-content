@@ -246,7 +246,7 @@ async function toPlan(ideaId) {
   }, 60);
 }
 async function renderPlan() {
-  PICK = {};
+  PICK = {}; window.__planImg = null;
   const plats = PLATFORMS.map((p) => `<div class="plat ${p.active ? "" : "dis"}" data-k="${p.key}" onclick="${p.active ? `togglePlat('${p.key}',this)` : ""}">
       ${esc(p.name)}${p.active ? "" : ` <small>· ${esc(p.note)}</small>`}</div>`).join("");
   $("pane-plan").innerHTML = `
@@ -274,6 +274,11 @@ async function renderPlan() {
         <button class="btn ghost" onclick="generatePost()">✨ Сгенерировать пост</button>
       </div>
       <input id="p-cta" placeholder="Ссылка на запись (по желанию — иначе возьмётся общая из бренда)" style="width:100%;margin-bottom:8px">
+      <div class="row" style="margin-bottom:6px">
+        <button class="btn ghost" onclick="genImage()">🎨 Сгенерировать картинку</button>
+        <button class="btn ghost" onclick="uploadImage()">📎 Загрузить картинку</button>
+      </div>
+      <div id="p-imgbox" style="margin-bottom:8px"></div>
       <div class="plats">${plats}</div>
       <div class="row">
         <input id="p-date" type="date">
@@ -328,6 +333,36 @@ async function generatePost() {
   if ($("p-text")) $("p-text").value = r.text || "";
   toast("Готово — проверь текст и отправь на согласование ✓");
 }
+function renderImgPreview() {
+  const box = $("p-imgbox"); if (!box) return;
+  box.innerHTML = window.__planImg
+    ? `<div style="display:flex;align-items:center;gap:10px"><img src="${window.__planImg}" style="width:90px;height:90px;object-fit:cover;border-radius:10px;border:1px solid var(--line)"><button class="link" onclick="clearImage()">убрать картинку</button></div>`
+    : "";
+}
+function clearImage() { window.__planImg = null; renderImgPreview(); }
+function _pickImage(cb) {
+  const i = document.createElement("input");
+  i.type = "file"; i.accept = "image/*";
+  i.onchange = () => { if (i.files && i.files[0]) cb(i.files[0]); };
+  i.click();
+}
+async function genImage() {
+  toast("Рисую картинку… (10–20 сек)");
+  const r = await api("generate/image", {
+    title: ($("p-title") ? $("p-title").value.trim() : ""),
+    text: ($("p-text") ? $("p-text").value.trim() : ""),
+    topic: ($("p-topic") ? $("p-topic").value.trim() : ""),
+    rubric_id: ($("p-rubric") && $("p-rubric").value) ? Number($("p-rubric").value) : null
+  });
+  if (!r.ok) { toast(r.error || "Не удалось"); return; }
+  window.__planImg = r.image_b64; renderImgPreview(); toast("Картинка готова ✓");
+}
+async function uploadImage() {
+  _pickImage(async (f) => {
+    if (f.size > 10 * 1024 * 1024) { toast("Картинка больше 10 МБ"); return; }
+    window.__planImg = await _fileB64(f); renderImgPreview(); toast("Картинка добавлена ✓");
+  });
+}
 async function addPlan() {
   const title = $("p-title").value.trim(), text = $("p-text").value.trim();
   const platforms = Object.keys(PICK).filter((k) => PICK[k]);
@@ -338,10 +373,12 @@ async function addPlan() {
     date: $("p-date").value, time: $("p-time").value, status: $("p-status").value,
     rubric_id: ($("p-rubric") && $("p-rubric").value) ? Number($("p-rubric").value) : null,
     cta_url: ($("p-cta") ? $("p-cta").value.trim() : ""),
+    image_b64: window.__planImg || "",
     idea_id: window.__planIdeaId || null, compliance: window.__planCompliance || {}
   });
   if (!r.ok) { toast(r.error || "Не удалось"); return; }
   $("p-title").value = ""; $("p-text").value = ""; if ($("p-cta")) $("p-cta").value = ""; window.__planIdeaId = null; window.__planCompliance = null;
+  window.__planImg = null; renderImgPreview();
   toast("В плане ✓"); loadPlan();
 }
 async function loadPlan() {
@@ -369,7 +406,7 @@ async function loadPlan() {
       }
       return `<tr>
         <td>${esc(when)}</td>
-        <td><b>${esc(p.title)}</b>${p.text ? `<div style="color:var(--muted);font-size:13px;margin-top:2px">${esc(p.text).slice(0, 120)}</div>` : ""}${rub}</td>
+        <td><b>${esc(p.title)}</b>${p.has_image ? ' <span title="есть картинка">🖼</span>' : ""}${p.text ? `<div style="color:var(--muted);font-size:13px;margin-top:2px">${esc(p.text).slice(0, 120)}</div>` : ""}${rub}</td>
         <td>${esc(pl)}</td>
         <td><span class="badge st-${p.status}">${ST_NAME[p.status] || p.status}</span>${pub}${perr}${note}</td>
         <td>${act}<button class="link" onclick="delPlan(${p.id})">Удалить</button></td>
