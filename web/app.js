@@ -336,9 +336,29 @@ async function generatePost() {
 }
 function renderImgPreview() {
   const box = $("p-imgbox"); if (!box) return;
-  box.innerHTML = window.__planImg
-    ? `<div style="display:flex;align-items:center;gap:10px"><img src="${window.__planImg}" style="width:90px;height:90px;object-fit:cover;border-radius:10px;border:1px solid var(--line)"><button class="link" onclick="clearImage()">убрать картинку</button></div>`
-    : "";
+  if (!window.__planImg) { box.innerHTML = ""; return; }
+  box.innerHTML = `<div style="display:flex;align-items:center;gap:12px">
+      <img src="${window.__planImg}" title="Нажмите, чтобы открыть в полном размере"
+           onclick="openImage()" style="width:120px;height:120px;object-fit:cover;border-radius:10px;border:1px solid var(--line);cursor:zoom-in">
+      <div style="display:flex;flex-direction:column;gap:6px">
+        <button class="link" onclick="openImage()">🔍 Открыть в полном размере</button>
+        <button class="link" onclick="downloadImage()">⬇️ Скачать</button>
+        <button class="link" onclick="clearImage()">✕ Убрать картинку</button>
+      </div>
+    </div>`;
+}
+function openImage() {
+  if (!window.__planImg) return;
+  const w = window.open("");
+  if (w) { w.document.write(`<title>Картинка поста</title><body style="margin:0;background:#111;display:flex;align-items:center;justify-content:center;min-height:100vh"><img src="${window.__planImg}" style="max-width:100%;max-height:100vh"></body>`); }
+  else { toast("Разреши всплывающие окна, чтобы открыть картинку"); }
+}
+function downloadImage() {
+  if (!window.__planImg) return;
+  const a = document.createElement("a");
+  a.href = window.__planImg;
+  a.download = "post-" + Date.now() + ".png";
+  document.body.appendChild(a); a.click(); a.remove();
 }
 function clearImage() { window.__planImg = null; renderImgPreview(); }
 function _pickImage(cb) {
