@@ -917,6 +917,8 @@ def _gen_prompt(brand, rub, region, topic):
         parts.append(f"Город/регион: {region}.")
     if brand.get("tone"):
         parts.append(f"Тон: {brand['tone']}")
+    if brand.get("guidelines"):
+        parts.append("Гайдлайны бренда (соблюдай строго): " + brand["guidelines"])
     parts.append("ОБЯЗАТЕЛЬНО соблюдай ст. 24 ФЗ «О рекламе» для медицины: без обещаний излечения и гарантий "
                  "результата, без запугивания здоровых, без утверждений о превосходстве («лучший», «№1»), "
                  "не создавай впечатление ненужности обращения к врачу. Пост информационно-заботливый, с призывом записаться.")
@@ -938,7 +940,7 @@ def generate(b: GenIn, user=Depends(current_user)):
     key = os.environ.get("ANTHROPIC_API_KEY", "")
     if not key:
         return {"ok": False, "error": "ANTHROPIC_API_KEY не задан на сервере"}
-    brand = db.query_one("SELECT name,tone,disclaimer,hashtags,signature FROM cp_brand WHERE id=1") or {}
+    brand = db.query_one("SELECT name,tone,disclaimer,hashtags,signature,guidelines FROM cp_brand WHERE id=1") or {}
     rub = db.query_one("SELECT title,hint FROM cp_rubrics WHERE id=%s", (b.rubric_id,)) if b.rubric_id else None
     rid = b.region_id if user["role"] == "owner" else user.get("region_id")
     region = None
@@ -1013,21 +1015,68 @@ class BrandIn(BaseModel):
     signature: str = ""
     logo_url: str = ""
     default_cta: str = ""
+    guidelines: str = ""
 
 
 @app.get("/api/brand")
 def brand_get(user=Depends(current_user)):
-    row = db.query_one("SELECT name,primary_color,accent_color,tone,disclaimer,hashtags,signature,logo_url,default_cta FROM cp_brand WHERE id=1")
+    row = db.query_one("SELECT name,primary_color,accent_color,tone,disclaimer,hashtags,signature,logo_url,default_cta,guidelines FROM cp_brand WHERE id=1")
     return {"ok": True, "brand": row or {}}
 
 
 @app.post("/api/brand")
 def brand_set(b: BrandIn, user=Depends(require_owner)):
     db.execute("UPDATE cp_brand SET name=%s,primary_color=%s,accent_color=%s,tone=%s,disclaimer=%s,"
-               "hashtags=%s,signature=%s,logo_url=%s,default_cta=%s,updated_at=now() WHERE id=1",
+               "hashtags=%s,signature=%s,logo_url=%s,default_cta=%s,guidelines=%s,updated_at=now() WHERE id=1",
                (b.name[:120], b.primary_color[:16], b.accent_color[:16], b.tone[:1000],
-                b.disclaimer[:500], b.hashtags[:500], b.signature[:300], b.logo_url[:500], (b.default_cta or "").strip()[:500]))
+                b.disclaimer[:500], b.hashtags[:500], b.signature[:300], b.logo_url[:500],
+                (b.default_cta or "").strip()[:500], (b.guidelines or "")[:4000]))
     return {"ok": True}
+
+
+class ImportIn(BaseModel):
+    data_b64: str = ""
+
+
+@app.post("/api/brand/import")
+def brand_import(b: ImportIn, user=Depends(require_owner)):
+    """Читает PDF-брендбук через Claude и предлагает заполнение полей стиля (без сохранения)."""
+    key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not key:
+        return {"ok": False, "error": "ANTHROPIC_API_KEY не задан на сервере"}
+    try:
+        raw = base64.b64decode((b.data_b64 or "").split(",")[-1])
+    except Exception:
+        return {"ok": False, "error": "битый файл"}
+    if not raw:
+        return {"ok": False, "error": "пустой файл"}
+    if len(raw) > 20 * 1024 * 1024:
+        return {"ok": False, "error": "PDF больше 20 МБ"}
+    pdf_b64 = base64.b64encode(raw).decode("ascii")
+    prompt = ("Это брендбук/гайд медицинской компании. Извлеки фирменный стиль и верни СТРОГО JSON без markdown: "
+              '{"name":"название бренда","tone":"тон общения одним абзацем","disclaimer":"дисклеймер о противопоказаниях",'
+              '"hashtags":"3-6 хэштегов через пробел","signature":"подпись/контакты","default_cta":"ссылка на запись если есть, иначе пусто",'
+              '"guidelines":"свод правил tone of voice связным текстом: что можно и нельзя говорить, стоп-слова, ключевые сообщения, ограничения по ст.24"}. '
+              "Если чего-то нет в брендбуке — оставь пустую строку. По-русски.")
+    body = {"model": os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6"), "max_tokens": 2000,
+            "messages": [{"role": "user", "content": [
+                {"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": pdf_b64}},
+                {"type": "text", "text": prompt}]}]}
+    try:
+        r = requests.post("https://api.anthropic.com/v1/messages",
+                          headers={"x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json"},
+                          json=body, timeout=120)
+        if r.status_code != 200:
+            return {"ok": False, "error": f"claude {r.status_code}: {r.text[:120]}"}
+        rawtxt = "".join(p.get("text", "") for p in r.json().get("content", []) if p.get("type") == "text")
+        data = json.loads(rawtxt.replace("```json", "").replace("```", "").strip())
+    except Exception as e:
+        return {"ok": False, "error": "разбор брендбука: " + str(e)[:120]}
+    return {"ok": True, "brand": {
+        "name": (data.get("name") or "")[:120], "tone": (data.get("tone") or "")[:2000],
+        "disclaimer": (data.get("disclaimer") or "")[:500], "hashtags": (data.get("hashtags") or "")[:500],
+        "signature": (data.get("signature") or "")[:300], "default_cta": (data.get("default_cta") or "")[:500],
+        "guidelines": (data.get("guidelines") or "")[:4000]}}
 
 
 @app.get("/api/rubrics")

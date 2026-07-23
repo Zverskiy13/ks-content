@@ -159,10 +159,12 @@ CREATE TABLE IF NOT EXISTS cp_brand (
     signature     text NOT NULL DEFAULT 'Клиники Столицы · запись: 8 800 200 89 90',
     logo_url      text NOT NULL DEFAULT '',
     default_cta   text NOT NULL DEFAULT '',
+    guidelines    text NOT NULL DEFAULT '',
     updated_at    timestamptz NOT NULL DEFAULT now(),
     CHECK (id = 1)
 );
 ALTER TABLE cp_brand ADD COLUMN IF NOT EXISTS default_cta text NOT NULL DEFAULT '';
+ALTER TABLE cp_brand ADD COLUMN IF NOT EXISTS guidelines  text NOT NULL DEFAULT '';
 CREATE TABLE IF NOT EXISTS cp_rubrics (
     id         bigserial PRIMARY KEY,
     title      text NOT NULL,

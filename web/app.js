@@ -455,8 +455,13 @@ async function loadBrand() {
   const r = await api("brand"); const b = r.brand || {}; const box = $("brandBox"); if (!box) return;
   const f = (id, label, val) => `<label style="display:block;margin-bottom:6px"><span style="font-size:12px;color:var(--muted)">${label}</span><input id="${id}" value="${esc(val || "")}" style="width:100%"></label>`;
   box.innerHTML = `
+    <div style="margin-bottom:10px;padding-bottom:10px;border-bottom:1px solid var(--line)">
+      <button class="btn ghost" onclick="importBrandbook()">📄 Загрузить брендбук (PDF)</button>
+      <span style="font-size:12px;color:var(--muted);margin-left:6px">ИИ прочитает и заполнит поля — проверь и сохрани</span>
+    </div>
     ${f("br-name", "Название", b.name)}
     <label style="display:block;margin-bottom:6px"><span style="font-size:12px;color:var(--muted)">Тон общения</span><textarea id="br-tone" style="width:100%;min-height:52px">${esc(b.tone || "")}</textarea></label>
+    <label style="display:block;margin-bottom:6px"><span style="font-size:12px;color:var(--muted)">Гайдлайны бренда (что можно/нельзя, стоп-слова, ключевые сообщения — уходит в ИИ-генерацию)</span><textarea id="br-guide" style="width:100%;min-height:80px">${esc(b.guidelines || "")}</textarea></label>
     ${f("br-disc", "Дисклеймер (противопоказания)", b.disclaimer)}
     ${f("br-tags", "Хэштеги", b.hashtags)}
     ${f("br-sign", "Подпись", b.signature)}
@@ -467,8 +472,29 @@ async function loadBrand() {
 }
 async function saveBrand() {
   const g = (id) => ($(id) ? $(id).value : "");
-  const r = await api("brand", { name: g("br-name"), tone: g("br-tone"), disclaimer: g("br-disc"), hashtags: g("br-tags"), signature: g("br-sign"), default_cta: g("br-cta"), primary_color: g("br-primary"), accent_color: g("br-accent"), logo_url: g("br-logo") });
+  const r = await api("brand", { name: g("br-name"), tone: g("br-tone"), guidelines: g("br-guide"), disclaimer: g("br-disc"), hashtags: g("br-tags"), signature: g("br-sign"), default_cta: g("br-cta"), primary_color: g("br-primary"), accent_color: g("br-accent"), logo_url: g("br-logo") });
   toast(r.ok ? "Стиль сохранён ✓" : (r.error || "Не удалось"));
+}
+function _pickPdf(cb) {
+  const i = document.createElement("input");
+  i.type = "file"; i.accept = "application/pdf,.pdf";
+  i.onchange = () => { if (i.files && i.files[0]) cb(i.files[0]); };
+  i.click();
+}
+function _fileB64(f) { return new Promise((res) => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.readAsDataURL(f); }); }
+async function importBrandbook() {
+  _pickPdf(async (f) => {
+    if (f.size > 20 * 1024 * 1024) { toast("PDF больше 20 МБ"); return; }
+    toast("Читаю брендбук…");
+    const b64 = await _fileB64(f);
+    const r = await api("brand/import", { data_b64: b64 });
+    if (!r.ok) { toast(r.error || "Не удалось"); return; }
+    const b = r.brand || {};
+    const set = (id, v) => { if ($(id) && v != null && v !== "") $(id).value = v; };
+    set("br-name", b.name); set("br-tone", b.tone); set("br-guide", b.guidelines);
+    set("br-disc", b.disclaimer); set("br-tags", b.hashtags); set("br-sign", b.signature); set("br-cta", b.default_cta);
+    toast("Заполнил из брендбука — проверь и сохрани ✓");
+  });
 }
 async function loadRubricsAdmin() {
   const r = await api("rubrics"); window.RUBRICS = r.rubrics || []; const box = $("rubBox"); if (!box) return;
