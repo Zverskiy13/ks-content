@@ -166,12 +166,21 @@ CREATE TABLE IF NOT EXISTS cp_brand (
     updated_at    timestamptz NOT NULL DEFAULT now(),
     CHECK (id = 1)
 );
--- миграция старой таблицы cp_brand без колонки id (осталась от раннего деплоя)
-ALTER TABLE cp_brand ADD COLUMN IF NOT EXISTS id smallint;
+-- миграция старой/неполной таблицы cp_brand: добиваем ВСЕ колонки на случай раннего деплоя
+ALTER TABLE cp_brand ADD COLUMN IF NOT EXISTS id            smallint;
 UPDATE cp_brand SET id=1 WHERE id IS NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS cp_brand_id_uniq ON cp_brand(id);
-ALTER TABLE cp_brand ADD COLUMN IF NOT EXISTS default_cta text NOT NULL DEFAULT '';
-ALTER TABLE cp_brand ADD COLUMN IF NOT EXISTS guidelines  text NOT NULL DEFAULT '';
+ALTER TABLE cp_brand ADD COLUMN IF NOT EXISTS name          text NOT NULL DEFAULT 'Клиники Столицы';
+ALTER TABLE cp_brand ADD COLUMN IF NOT EXISTS primary_color text NOT NULL DEFAULT '#C0392B';
+ALTER TABLE cp_brand ADD COLUMN IF NOT EXISTS accent_color  text NOT NULL DEFAULT '#1F9D55';
+ALTER TABLE cp_brand ADD COLUMN IF NOT EXISTS tone          text NOT NULL DEFAULT '';
+ALTER TABLE cp_brand ADD COLUMN IF NOT EXISTS disclaimer    text NOT NULL DEFAULT '';
+ALTER TABLE cp_brand ADD COLUMN IF NOT EXISTS hashtags      text NOT NULL DEFAULT '';
+ALTER TABLE cp_brand ADD COLUMN IF NOT EXISTS signature     text NOT NULL DEFAULT '';
+ALTER TABLE cp_brand ADD COLUMN IF NOT EXISTS logo_url      text NOT NULL DEFAULT '';
+ALTER TABLE cp_brand ADD COLUMN IF NOT EXISTS default_cta   text NOT NULL DEFAULT '';
+ALTER TABLE cp_brand ADD COLUMN IF NOT EXISTS guidelines    text NOT NULL DEFAULT '';
+ALTER TABLE cp_brand ADD COLUMN IF NOT EXISTS updated_at    timestamptz NOT NULL DEFAULT now();
 CREATE TABLE IF NOT EXISTS cp_rubrics (
     id         bigserial PRIMARY KEY,
     title      text NOT NULL,
