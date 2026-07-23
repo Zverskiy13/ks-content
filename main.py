@@ -899,6 +899,67 @@ def _scheduler_loop():
 threading.Thread(target=_scheduler_loop, daemon=True).start()
 
 
+# ---------------- ИИ-генерация поста ----------------
+class GenIn(BaseModel):
+    region_id: int | None = None
+    rubric_id: int | None = None
+    topic: str = ""
+
+
+def _gen_prompt(brand, rub, region, topic):
+    parts = [f"Ты — контент-редактор сети медицинских клиник «{brand.get('name') or 'Клиники Столицы'}». "
+             "Напиши ОДИН пост для соцсетей (VK/Telegram) на русском языке."]
+    if rub:
+        parts.append(f"Рубрика: {rub.get('title')} — {rub.get('hint') or ''}.")
+    if topic:
+        parts.append(f"Тема/повод: {topic}.")
+    if region:
+        parts.append(f"Город/регион: {region}.")
+    if brand.get("tone"):
+        parts.append(f"Тон: {brand['tone']}")
+    parts.append("ОБЯЗАТЕЛЬНО соблюдай ст. 24 ФЗ «О рекламе» для медицины: без обещаний излечения и гарантий "
+                 "результата, без запугивания здоровых, без утверждений о превосходстве («лучший», «№1»), "
+                 "не создавай впечатление ненужности обращения к врачу. Пост информационно-заботливый, с призывом записаться.")
+    if brand.get("disclaimer"):
+        parts.append(f"В конце добавь дисклеймер: «{brand['disclaimer']}».")
+    tail = []
+    if brand.get("hashtags"):
+        tail.append("хэштеги: " + brand["hashtags"])
+    if brand.get("signature"):
+        tail.append("подпись: " + brand["signature"])
+    if tail:
+        parts.append("В конце также добавь " + "; ".join(tail) + ".")
+    parts.append('Верни СТРОГО JSON без markdown: {"title":"короткий заголовок","text":"полный текст поста с эмодзи и абзацами"}.')
+    return "\n".join(parts)
+
+
+@app.post("/api/generate")
+def generate(b: GenIn, user=Depends(current_user)):
+    key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not key:
+        return {"ok": False, "error": "ANTHROPIC_API_KEY не задан на сервере"}
+    brand = db.query_one("SELECT name,tone,disclaimer,hashtags,signature FROM cp_brand WHERE id=1") or {}
+    rub = db.query_one("SELECT title,hint FROM cp_rubrics WHERE id=%s", (b.rubric_id,)) if b.rubric_id else None
+    rid = b.region_id if user["role"] == "owner" else user.get("region_id")
+    region = None
+    if rid:
+        rg = db.query_one("SELECT name FROM cp_regions WHERE id=%s", (rid,))
+        region = (rg or {}).get("name")
+    body = {"model": os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6"), "max_tokens": 1500,
+            "messages": [{"role": "user", "content": _gen_prompt(brand, rub, region, (b.topic or "").strip()[:300])}]}
+    try:
+        r = requests.post("https://api.anthropic.com/v1/messages",
+                          headers={"x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json"},
+                          json=body, timeout=90)
+        if r.status_code != 200:
+            return {"ok": False, "error": f"claude {r.status_code}"}
+        raw = "".join(p.get("text", "") for p in r.json().get("content", []) if p.get("type") == "text")
+        data = json.loads(raw.replace("```json", "").replace("```", "").strip())
+    except Exception as e:
+        return {"ok": False, "error": "генерация: " + str(e)[:120]}
+    return {"ok": True, "title": (data.get("title") or "")[:200], "text": data.get("text") or ""}
+
+
 # ---------------- Аналитика охватов ----------------
 @app.get("/api/analytics")
 def analytics(region_id: int | None = None, user=Depends(current_user)):

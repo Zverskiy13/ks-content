@@ -269,6 +269,10 @@ async function renderPlan() {
       <div class="row" style="margin-bottom:8px">
         <select id="p-rubric" style="flex:1"><option value="">Рубрика (по желанию)</option>${(window.RUBRICS || []).map((r) => `<option value="${r.id}">${esc(r.title)}</option>`).join("")}</select>
       </div>
+      <div class="row" style="margin-bottom:8px">
+        <input id="p-topic" placeholder="Тема/повод для ИИ (по желанию)" style="flex:2">
+        <button class="btn ghost" onclick="generatePost()">✨ Сгенерировать пост</button>
+      </div>
       <input id="p-cta" placeholder="Ссылка на запись (по желанию — иначе возьмётся общая из бренда)" style="width:100%;margin-bottom:8px">
       <div class="plats">${plats}</div>
       <div class="row">
@@ -312,6 +316,18 @@ async function publishNow(id) {
   toast(r.ok ? "Опубликовано ✓" : (r.error || "Не удалось")); loadPlan();
 }
 function togglePlat(k, elx) { PICK[k] = !PICK[k]; elx.classList.toggle("on", !!PICK[k]); }
+async function generatePost() {
+  toast("Пишу пост…");
+  const r = await api("generate", {
+    region_id: CUR_REGION,
+    rubric_id: ($("p-rubric") && $("p-rubric").value) ? Number($("p-rubric").value) : null,
+    topic: ($("p-topic") ? $("p-topic").value.trim() : "")
+  });
+  if (!r.ok) { toast(r.error || "Не удалось"); return; }
+  if ($("p-title")) $("p-title").value = r.title || "";
+  if ($("p-text")) $("p-text").value = r.text || "";
+  toast("Готово — проверь текст и отправь на согласование ✓");
+}
 async function addPlan() {
   const title = $("p-title").value.trim(), text = $("p-text").value.trim();
   const platforms = Object.keys(PICK).filter((k) => PICK[k]);
