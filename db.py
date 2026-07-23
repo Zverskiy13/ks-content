@@ -142,6 +142,11 @@ ALTER TABLE cp_plan ADD COLUMN IF NOT EXISTS m_likes    int;
 ALTER TABLE cp_plan ADD COLUMN IF NOT EXISTS m_reposts  int;
 ALTER TABLE cp_plan ADD COLUMN IF NOT EXISTS m_comments int;
 ALTER TABLE cp_plan ADD COLUMN IF NOT EXISTS metrics_at timestamptz;
+-- связка с заявками: целевая ссылка, короткий токен и счётчик переходов
+ALTER TABLE cp_plan ADD COLUMN IF NOT EXISTS cta_url    text;
+ALTER TABLE cp_plan ADD COLUMN IF NOT EXISTS link_token text;
+ALTER TABLE cp_plan ADD COLUMN IF NOT EXISTS clicks     int NOT NULL DEFAULT 0;
+CREATE UNIQUE INDEX IF NOT EXISTS cp_plan_link ON cp_plan(link_token) WHERE link_token IS NOT NULL;
 -- фирменный стиль (одна строка настроек) и рубрики
 CREATE TABLE IF NOT EXISTS cp_brand (
     id            smallint PRIMARY KEY DEFAULT 1,
@@ -153,9 +158,11 @@ CREATE TABLE IF NOT EXISTS cp_brand (
     hashtags      text NOT NULL DEFAULT '#КлиникиСтолицы #здоровье #анализы #профосмотр',
     signature     text NOT NULL DEFAULT 'Клиники Столицы · запись: 8 800 200 89 90',
     logo_url      text NOT NULL DEFAULT '',
+    default_cta   text NOT NULL DEFAULT '',
     updated_at    timestamptz NOT NULL DEFAULT now(),
     CHECK (id = 1)
 );
+ALTER TABLE cp_brand ADD COLUMN IF NOT EXISTS default_cta text NOT NULL DEFAULT '';
 CREATE TABLE IF NOT EXISTS cp_rubrics (
     id         bigserial PRIMARY KEY,
     title      text NOT NULL,

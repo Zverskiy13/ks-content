@@ -18,7 +18,7 @@ import datetime as dt
 
 import requests
 from fastapi import FastAPI, Request, Response, Depends, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -299,6 +299,7 @@ class PlanIn(BaseModel):
     idea_id: int | None = None
     compliance: dict | None = None
     rubric_id: int | None = None
+    cta_url: str = ""
 
 
 @app.post("/api/plan/add")
@@ -312,12 +313,23 @@ def plan_add(b: PlanIn, user=Depends(current_user)):
         d = None
     # новый пост всегда стартует как черновик — публикация только после одобрения владельцем
     st = b.status if b.status in ("draft", "pending") else "draft"
+    token = secrets.token_urlsafe(6)
     row = db.query_one(
-        "INSERT INTO cp_plan(region_id,title,text,platforms,plan_date,plan_time,status,idea_id,compliance,rubric_id,submitted_at) "
-        "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
+        "INSERT INTO cp_plan(region_id,title,text,platforms,plan_date,plan_time,status,idea_id,compliance,rubric_id,submitted_at,cta_url,link_token) "
+        "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
         (rid, b.title[:200], b.text, plats, d, (b.time or "")[:5], st, b.idea_id,
-         db.jval(b.compliance or {}), b.rubric_id, (dt.datetime.now() if st == "pending" else None)))
+         db.jval(b.compliance or {}), b.rubric_id, (dt.datetime.now() if st == "pending" else None),
+         (b.cta_url or "").strip()[:500], token))
     return {"ok": True, "id": row["id"]}
+
+
+@app.get("/r/{token}")
+def redirect_link(token: str):
+    row = db.query_one("SELECT id,cta_url FROM cp_plan WHERE link_token=%s", (token,))
+    if row:
+        db.execute("UPDATE cp_plan SET clicks=COALESCE(clicks,0)+1 WHERE id=%s", (row["id"],))
+    target = ((row or {}).get("cta_url") or "").strip() or _brand_cta() or "https://stoclinic.ru"
+    return RedirectResponse(target, status_code=302)
 
 
 @app.get("/api/plan")
@@ -696,10 +708,23 @@ def social_disconnect(b: SocialPlat, user=Depends(current_user)):
     return {"ok": True}
 
 
+def _brand_cta():
+    b = db.query_one("SELECT default_cta FROM cp_brand WHERE id=1")
+    return ((b or {}).get("default_cta") or "").strip()
+
+
 def _post_text(row):
     t = (row.get("title") or "").strip()
     body = (row.get("text") or "").strip()
-    return (t + "\n\n" + body).strip() if body else t
+    txt = (t + "\n\n" + body).strip() if body else t
+    # ссылка на запись: своя у поста или общая из бренда; если задан PLATFORM_BASE_URL — трекаем переходы
+    target = (row.get("cta_url") or "").strip() or _brand_cta()
+    if target:
+        base = os.environ.get("PLATFORM_BASE_URL", "").rstrip("/")
+        tok = row.get("link_token")
+        link = f"{base}/r/{tok}" if (base and tok) else target
+        txt = (txt + "\n\n📅 Запись: " + link).strip()
+    return txt
 
 
 def _vk_publish(token, group_id, text):
@@ -884,10 +909,10 @@ def analytics(region_id: int | None = None, user=Depends(current_user)):
         params.append(int(rid))
     rows = db.query(
         "SELECT p.id,p.title,p.region_id,p.rubric_id,p.platforms,p.published_url,p.published_at,"
-        "p.m_views,p.m_likes,p.m_reposts,p.m_comments,p.metrics_at, r.name AS region "
+        "p.m_views,p.m_likes,p.m_reposts,p.m_comments,p.clicks,p.metrics_at, r.name AS region "
         "FROM cp_plan p LEFT JOIN cp_regions r ON r.id=p.region_id "
         "WHERE " + clause + " ORDER BY p.published_at DESC NULLS LAST LIMIT 300", tuple(params))
-    tot = {"posts": 0, "views": 0, "likes": 0, "reposts": 0, "comments": 0}
+    tot = {"posts": 0, "views": 0, "likes": 0, "reposts": 0, "comments": 0, "clicks": 0}
     by_rubric = {}
     for x in rows:
         x["published_at"] = x["published_at"].isoformat() if x.get("published_at") else ""
@@ -895,11 +920,13 @@ def analytics(region_id: int | None = None, user=Depends(current_user)):
         tot["posts"] += 1
         for k in ("views", "likes", "reposts", "comments"):
             tot[k] += (x.get("m_" + k) or 0)
+        tot["clicks"] += (x.get("clicks") or 0)
         rb = x.get("rubric_id")
-        a = by_rubric.setdefault(rb, {"rubric_id": rb, "posts": 0, "views": 0, "likes": 0})
+        a = by_rubric.setdefault(rb, {"rubric_id": rb, "posts": 0, "views": 0, "likes": 0, "clicks": 0})
         a["posts"] += 1
         a["views"] += (x.get("m_views") or 0)
         a["likes"] += (x.get("m_likes") or 0)
+        a["clicks"] += (x.get("clicks") or 0)
     return {"ok": True, "posts": rows, "total": tot, "by_rubric": list(by_rubric.values())}
 
 
@@ -924,20 +951,21 @@ class BrandIn(BaseModel):
     hashtags: str = ""
     signature: str = ""
     logo_url: str = ""
+    default_cta: str = ""
 
 
 @app.get("/api/brand")
 def brand_get(user=Depends(current_user)):
-    row = db.query_one("SELECT name,primary_color,accent_color,tone,disclaimer,hashtags,signature,logo_url FROM cp_brand WHERE id=1")
+    row = db.query_one("SELECT name,primary_color,accent_color,tone,disclaimer,hashtags,signature,logo_url,default_cta FROM cp_brand WHERE id=1")
     return {"ok": True, "brand": row or {}}
 
 
 @app.post("/api/brand")
 def brand_set(b: BrandIn, user=Depends(require_owner)):
     db.execute("UPDATE cp_brand SET name=%s,primary_color=%s,accent_color=%s,tone=%s,disclaimer=%s,"
-               "hashtags=%s,signature=%s,logo_url=%s,updated_at=now() WHERE id=1",
+               "hashtags=%s,signature=%s,logo_url=%s,default_cta=%s,updated_at=now() WHERE id=1",
                (b.name[:120], b.primary_color[:16], b.accent_color[:16], b.tone[:1000],
-                b.disclaimer[:500], b.hashtags[:500], b.signature[:300], b.logo_url[:500]))
+                b.disclaimer[:500], b.hashtags[:500], b.signature[:300], b.logo_url[:500], (b.default_cta or "").strip()[:500]))
     return {"ok": True}
 
 

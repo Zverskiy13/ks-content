@@ -77,20 +77,20 @@ async function loadAnalytics() {
   const t = r.total || {};
   const num = (v) => (v || 0).toLocaleString("ru-RU");
   const metric = (label, val) => `<div class="card" style="flex:1;min-width:110px;text-align:center;padding:10px"><div style="font-size:12px;color:var(--muted)">${label}</div><div style="font-size:22px;font-weight:800">${num(val)}</div></div>`;
-  const tb = $("anTot"); if (tb) tb.innerHTML = metric("Постов", t.posts) + metric("Просмотры", t.views) + metric("Лайки", t.likes) + metric("Репосты", t.reposts) + metric("Комментарии", t.comments);
+  const tb = $("anTot"); if (tb) tb.innerHTML = metric("Постов", t.posts) + metric("Просмотры", t.views) + metric("Переходы", t.clicks) + metric("Лайки", t.likes) + metric("Репосты", t.reposts) + metric("Комментарии", t.comments);
   const rub = $("anRub");
   if (rub) {
     const list = (r.by_rubric || []).filter((x) => x.posts).sort((a, b) => (b.views || 0) - (a.views || 0));
-    rub.innerHTML = list.length ? `<table><thead><tr><th>Рубрика</th><th>Постов</th><th>Просмотры</th><th>Лайки</th></tr></thead><tbody>${list.map((x) => `<tr><td>${esc(rubName(x.rubric_id) || "без рубрики")}</td><td>${x.posts}</td><td>${num(x.views)}</td><td>${num(x.likes)}</td></tr>`).join("")}</tbody></table>` : `<div class="empty">Пока нет данных.</div>`;
+    rub.innerHTML = list.length ? `<table><thead><tr><th>Рубрика</th><th>Постов</th><th>Просмотры</th><th>Переходы</th><th>Лайки</th></tr></thead><tbody>${list.map((x) => `<tr><td>${esc(rubName(x.rubric_id) || "без рубрики")}</td><td>${x.posts}</td><td>${num(x.views)}</td><td><b>${num(x.clicks)}</b></td><td>${num(x.likes)}</td></tr>`).join("")}</tbody></table>` : `<div class="empty">Пока нет данных.</div>`;
   }
   const box = $("anList");
   if (box) {
     const list = (r.posts || []);
     const isOwner = PROFILE.role === "owner";
-    box.innerHTML = list.length ? `<table><thead><tr><th>Дата</th>${isOwner ? "<th>Регион</th>" : ""}<th>Пост</th><th>Просм.</th><th>Лайки</th><th>Реп.</th><th>Комм.</th></tr></thead><tbody>${list.map((p) => {
+    box.innerHTML = list.length ? `<table><thead><tr><th>Дата</th>${isOwner ? "<th>Регион</th>" : ""}<th>Пост</th><th>Просм.</th><th>Переходы</th><th>Лайки</th><th>Реп.</th><th>Комм.</th></tr></thead><tbody>${list.map((p) => {
       const d = (p.published_at || "").slice(0, 10);
       const link = p.published_url ? `<a href="${esc(p.published_url)}" target="_blank" rel="noopener">${esc(p.title)}</a>` : esc(p.title);
-      return `<tr><td>${esc(d)}</td>${isOwner ? `<td>${esc(p.region || "—")}</td>` : ""}<td>${link}${p.rubric_id ? `<div style="font-size:12px;color:var(--muted)">${esc(rubName(p.rubric_id))}</div>` : ""}</td><td>${num(p.m_views)}</td><td>${num(p.m_likes)}</td><td>${num(p.m_reposts)}</td><td>${num(p.m_comments)}</td></tr>`;
+      return `<tr><td>${esc(d)}</td>${isOwner ? `<td>${esc(p.region || "—")}</td>` : ""}<td>${link}${p.rubric_id ? `<div style="font-size:12px;color:var(--muted)">${esc(rubName(p.rubric_id))}</div>` : ""}</td><td>${num(p.m_views)}</td><td><b>${num(p.clicks)}</b></td><td>${num(p.m_likes)}</td><td>${num(p.m_reposts)}</td><td>${num(p.m_comments)}</td></tr>`;
     }).join("")}</tbody></table>` : `<div class="empty">Опубликованных постов ещё нет.</div>`;
   }
 }
@@ -269,6 +269,7 @@ async function renderPlan() {
       <div class="row" style="margin-bottom:8px">
         <select id="p-rubric" style="flex:1"><option value="">Рубрика (по желанию)</option>${(window.RUBRICS || []).map((r) => `<option value="${r.id}">${esc(r.title)}</option>`).join("")}</select>
       </div>
+      <input id="p-cta" placeholder="Ссылка на запись (по желанию — иначе возьмётся общая из бренда)" style="width:100%;margin-bottom:8px">
       <div class="plats">${plats}</div>
       <div class="row">
         <input id="p-date" type="date">
@@ -320,10 +321,11 @@ async function addPlan() {
     region_id: CUR_REGION, title, text, platforms,
     date: $("p-date").value, time: $("p-time").value, status: $("p-status").value,
     rubric_id: ($("p-rubric") && $("p-rubric").value) ? Number($("p-rubric").value) : null,
+    cta_url: ($("p-cta") ? $("p-cta").value.trim() : ""),
     idea_id: window.__planIdeaId || null, compliance: window.__planCompliance || {}
   });
   if (!r.ok) { toast(r.error || "Не удалось"); return; }
-  $("p-title").value = ""; $("p-text").value = ""; window.__planIdeaId = null; window.__planCompliance = null;
+  $("p-title").value = ""; $("p-text").value = ""; if ($("p-cta")) $("p-cta").value = ""; window.__planIdeaId = null; window.__planCompliance = null;
   toast("В плане ✓"); loadPlan();
 }
 async function loadPlan() {
@@ -442,13 +444,14 @@ async function loadBrand() {
     ${f("br-disc", "Дисклеймер (противопоказания)", b.disclaimer)}
     ${f("br-tags", "Хэштеги", b.hashtags)}
     ${f("br-sign", "Подпись", b.signature)}
+    ${f("br-cta", "Ссылка на запись по умолчанию", b.default_cta)}
     <div class="row">${f("br-primary", "Основной цвет", b.primary_color)}${f("br-accent", "Акцент", b.accent_color)}</div>
     ${f("br-logo", "URL логотипа", b.logo_url)}
     <div style="margin-top:8px"><button class="btn primary" onclick="saveBrand()">Сохранить стиль</button></div>`;
 }
 async function saveBrand() {
   const g = (id) => ($(id) ? $(id).value : "");
-  const r = await api("brand", { name: g("br-name"), tone: g("br-tone"), disclaimer: g("br-disc"), hashtags: g("br-tags"), signature: g("br-sign"), primary_color: g("br-primary"), accent_color: g("br-accent"), logo_url: g("br-logo") });
+  const r = await api("brand", { name: g("br-name"), tone: g("br-tone"), disclaimer: g("br-disc"), hashtags: g("br-tags"), signature: g("br-sign"), default_cta: g("br-cta"), primary_color: g("br-primary"), accent_color: g("br-accent"), logo_url: g("br-logo") });
   toast(r.ok ? "Стиль сохранён ✓" : (r.error || "Не удалось"));
 }
 async function loadRubricsAdmin() {
