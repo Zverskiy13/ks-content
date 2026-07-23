@@ -12,10 +12,8 @@ import time
 import base64
 import hmac
 import hashlib
-import re
 import secrets
 import threading
-import html as _html
 import datetime as dt
 
 import requests
@@ -123,6 +121,23 @@ def region_for(user, region_id):
     return int(user["region_id"])
 
 
+# рубрики медтематики — засеваются при первом старте
+RUBRICS_SEED = [
+    ("Профосмотры и медкнижки", "Польза для работодателя и сотрудника, как проходит, сроки, официально. Без гарантий."),
+    ("Справки и допуски", "Оружие, гостайна, ГИМС, водительские, 086у — зачем нужны и как получить у нас быстро и официально."),
+    ("Анализы и чек-апы", "Профилактика, ранняя диагностика, комплексные обследования. Забота о здоровье, без запугивания."),
+    ("Акции и спецпредложения", "Действующие акции и выгодные комплексы. Обязательно условия и сроки."),
+    ("Дни здоровья и профилактика", "Сезонные темы, полезные привычки, вакцинация, диспансеризация."),
+    ("Полезные советы от врача", "Экспертный короткий контент от специалистов. Без постановки диагнозов и обещаний."),
+    ("Отзывы и истории пациентов", "Реальный опыт (с согласия пациента), доверие к клинике."),
+    ("О клинике и команде", "Врачи, оборудование, лаборатория, адреса, режим работы."),
+]
+
+# статусы плана и правила модерации
+PLAN_STATUSES = {"draft", "pending", "approved", "rejected", "published"}
+MANAGER_STATUSES = {"draft", "pending"}   # регион может только отправить на согласование
+
+
 # ---------------- Старт: схема + сиды ----------------
 @app.on_event("startup")
 def _startup():
@@ -139,6 +154,14 @@ def _startup():
         db.execute("INSERT INTO cp_users(email,name,role,region_id,salt,pass_hash) "
                    "VALUES(%s,%s,'owner',NULL,%s,%s)", (oe, "Владелец", salt, ph))
         print(f"CP: создан владелец {oe}")
+    # миграция старого статуса 'ready' → 'pending' (теперь требуется одобрение владельца)
+    db.execute("UPDATE cp_plan SET status='pending', submitted_at=COALESCE(submitted_at, now()) WHERE status='ready'")
+    # фирменный стиль и рубрики — дефолты при первом старте
+    db.execute("INSERT INTO cp_brand(id) VALUES(1) ON CONFLICT (id) DO NOTHING")
+    if not db.query_one("SELECT id FROM cp_rubrics LIMIT 1"):
+        for title, hint in RUBRICS_SEED:
+            db.execute("INSERT INTO cp_rubrics(title,hint) VALUES(%s,%s)", (title, hint))
+        print("CP: засеяны рубрики")
 
 
 # ---------------- Auth ----------------
@@ -209,13 +232,13 @@ def _analyst_prompt(src):
         "рекламный характер => needs_erid:true, инфо-образовательный контент в своём сообществе обычно органика. Коротко, по-русски.\n\nИСТОЧНИК:\n" + src)
 
 
-def _claude_json(prompt, maxt=1600):
-    """(obj|None, error|None) — зовёт Claude и парсит строгий JSON-ответ."""
+def _analyst_card(src):
+    """Возвращает (card|None, error|None). Зовёт Claude по тексту/ссылке ролика."""
     key = os.environ.get("ANTHROPIC_API_KEY", "")
     if not key:
         return None, "ANTHROPIC_API_KEY не задан на сервере"
-    body = {"model": os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6"), "max_tokens": maxt,
-            "messages": [{"role": "user", "content": prompt}]}
+    body = {"model": os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6"), "max_tokens": 1600,
+            "messages": [{"role": "user", "content": _analyst_prompt(src)}]}
     try:
         r = requests.post("https://api.anthropic.com/v1/messages",
                           headers={"x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json"},
@@ -226,10 +249,6 @@ def _claude_json(prompt, maxt=1600):
         return json.loads(raw.replace("```json", "").replace("```", "").strip()), None
     except Exception as e:
         return None, str(e)[:140]
-
-
-def _analyst_card(src):
-    return _claude_json(_analyst_prompt(src))
 
 
 @app.post("/api/analyze")
@@ -267,146 +286,6 @@ def ideas_delete(b: IdIn, user=Depends(current_user)):
     return {"ok": True}
 
 
-# ---------------- Агент «Сценарист/копирайтер» ----------------
-def _script_prompt(theme, hook, direction, idea):
-    return (
-        "Ты — сценарист и копирайтер для сети МЕДИЦИНСКИХ клиник «Клиники Столицы». "
-        "По идее ниже напиши ГОТОВЫЙ пост под соцсети. Верни СТРОГО JSON без markdown:\n"
-        '{"title":"короткий заголовок поста",'
-        '"headlines":["3-5 вариантов цепляющих заголовков"],'
-        '"post_vk":"готовый текст поста для VK: живой, до ~1200 знаков, с мягким призывом, без агрессивной рекламы",'
-        '"post_ok":"версия для Одноклассников: чуть теплее и нейтральнее",'
-        '"cta":"мягкий призыв к действию",'
-        '"disclaimer":"Имеются противопоказания, необходима консультация специалиста",'
-        '"compliance":{"art24_ok":true,"flags":["нарушения ст.24 если есть"],"needs_erid":false}}\n'
-        "Правила ст.24 ФЗ «О рекламе»: без гарантий результата, без «полного излечения», без запугивания здорового, "
-        "без обращения к несовершеннолетним. Если пост носит рекламный характер (продвижение конкретной платной услуги) => needs_erid:true. "
-        "По-русски, конкретно, без воды.\n\n"
-        f"ИДЕЯ:\nТема: {theme}\nХук: {hook}\nНаправление: {direction}\nМеханика/идея: {idea}")
-
-
-class ScriptIn(BaseModel):
-    region_id: int | None = None
-    theme: str = ""
-    hook: str = ""
-    direction: str = ""
-    idea: str = ""
-
-
-@app.post("/api/script/generate")
-def script_generate(b: ScriptIn, user=Depends(current_user)):
-    region_for(user, b.region_id)  # проверка доступа к региону
-    if not (b.theme.strip() or b.idea.strip()):
-        return {"ok": False, "error": "нет идеи для поста"}
-    script, err = _claude_json(_script_prompt(b.theme, b.hook, b.direction, b.idea))
-    if err:
-        return {"ok": False, "error": err}
-    return {"ok": True, "script": script}
-
-
-# ---------------- Агент «Генератор обложек» (OpenAI gpt-image) ----------------
-def _image_prompt(user_prompt):
-    return ("Обложка для поста медицинской клиники в соцсети. Чистый, профессиональный, доверительный стиль, "
-            "мягкие тона, аккуратная композиция, без текста на изображении. "
-            "НЕ показывай конкретные «результаты лечения», не изображай вводящих в заблуждение медицинских утверждений. "
-            "Тема: " + user_prompt)
-
-
-def _openai_image(prompt):
-    key = os.environ.get("OPENAI_API_KEY", "")
-    if not key:
-        return None, "OPENAI_API_KEY не задан на сервере"
-    model = os.environ.get("OPENAI_IMAGE_MODEL", "gpt-image-1")
-    body = {"model": model, "prompt": prompt, "size": "1024x1024", "n": 1}
-    if model.startswith("dall-e"):
-        body["response_format"] = "b64_json"
-    try:
-        r = requests.post("https://api.openai.com/v1/images/generations",
-                          headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-                          json=body, timeout=120)
-        if r.status_code != 200:
-            return None, f"openai {r.status_code}: {r.text[:120]}"
-        d = r.json()["data"][0]
-        if d.get("b64_json"):
-            return d["b64_json"], None
-        if d.get("url"):
-            img = requests.get(d["url"], timeout=60)
-            return base64.b64encode(img.content).decode(), None
-        return None, "нет изображения"
-    except Exception as e:
-        return None, str(e)[:140]
-
-
-class ImageIn(BaseModel):
-    region_id: int | None = None
-    prompt: str
-
-
-@app.post("/api/image/generate")
-def image_generate(b: ImageIn, user=Depends(current_user)):
-    region_for(user, b.region_id)
-    if not b.prompt.strip():
-        return {"ok": False, "error": "нет описания картинки"}
-    b64, err = _openai_image(_image_prompt(b.prompt.strip()))
-    if err:
-        return {"ok": False, "error": err}
-    return {"ok": True, "image_b64": b64}
-
-
-# ---------------- Фирменный стиль + чат-студия обложек ----------------
-class BrandIn(BaseModel):
-    region_id: int | None = None
-    style: str = ""
-
-
-@app.get("/api/brand")
-def brand_get(region_id: int | None = None, user=Depends(current_user)):
-    rid = region_for(user, region_id)
-    r = db.query_one("SELECT style FROM cp_brand WHERE region_id=%s", (rid,))
-    return {"ok": True, "style": (r["style"] if r else "")}
-
-
-@app.post("/api/brand")
-def brand_set(b: BrandIn, user=Depends(current_user)):
-    rid = region_for(user, b.region_id)
-    db.execute("INSERT INTO cp_brand(region_id,style) VALUES(%s,%s) "
-               "ON CONFLICT (region_id) DO UPDATE SET style=EXCLUDED.style, updated_at=now()",
-               (rid, (b.style or "").strip()[:2000]))
-    return {"ok": True}
-
-
-def _studio_refine(brand, idea):
-    """Claude превращает свободную идею сотрудника в конкретный промпт в фирменном стиле."""
-    p = ("Ты — арт-директор медицинской клиники. Составь КОНКРЕТНЫЙ промпт для генератора изображений по идее сотрудника, "
-         "строго в фирменном стиле. Верни СТРОГО JSON без markdown: "
-         '{"prompt":"детальный промпт на русском: сцена, композиция, цвета/настроение фирстиля, свет; '
-         'без текста на картинке; без «результатов лечения» и вводящих в заблуждение медицинских образов"}.\n'
-         f"ФИРМЕННЫЙ СТИЛЬ: {brand}\nИДЕЯ СОТРУДНИКА: {idea}")
-    obj, err = _claude_json(p, 500)
-    if obj and obj.get("prompt"):
-        return obj["prompt"]
-    return f"{brand}. {idea}. Чистый профессиональный медицинский стиль, без текста на изображении."
-
-
-class StudioIn(BaseModel):
-    region_id: int | None = None
-    text: str
-
-
-@app.post("/api/studio/generate")
-def studio_generate(b: StudioIn, user=Depends(current_user)):
-    rid = region_for(user, b.region_id)
-    if not b.text.strip():
-        return {"ok": False, "error": "Опиши, какую картинку хочешь"}
-    br = db.query_one("SELECT style FROM cp_brand WHERE region_id=%s", (rid,))
-    brand = (br["style"] if br else "") or "Чистый, профессиональный, доверительный стиль, мягкие тона."
-    prompt = _studio_refine(brand, b.text.strip())
-    b64, err = _openai_image(prompt)
-    if err:
-        return {"ok": False, "error": err}
-    return {"ok": True, "image_b64": b64, "prompt": prompt}
-
-
 # ---------------- Контент-план ----------------
 class PlanIn(BaseModel):
     region_id: int | None = None
@@ -418,9 +297,7 @@ class PlanIn(BaseModel):
     status: str = "draft"
     idea_id: int | None = None
     compliance: dict | None = None
-    image_url: str = ""
-    video_url: str = ""
-    image_data: str = ""
+    rubric_id: int | None = None
 
 
 @app.post("/api/plan/add")
@@ -432,18 +309,20 @@ def plan_add(b: PlanIn, user=Depends(current_user)):
         d = dt.date.fromisoformat(b.date) if b.date else None
     except Exception:
         d = None
+    # новый пост всегда стартует как черновик — публикация только после одобрения владельцем
+    st = b.status if b.status in ("draft", "pending") else "draft"
     row = db.query_one(
-        "INSERT INTO cp_plan(region_id,title,text,platforms,plan_date,plan_time,status,idea_id,compliance,image_url,video_url,image_data) "
-        "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
-        (rid, b.title[:200], b.text, plats, d, (b.time or "")[:5], b.status, b.idea_id, db.jval(b.compliance or {}),
-         (b.image_url or "").strip(), (b.video_url or "").strip(), (b.image_data or "").strip()))
+        "INSERT INTO cp_plan(region_id,title,text,platforms,plan_date,plan_time,status,idea_id,compliance,rubric_id,submitted_at) "
+        "VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
+        (rid, b.title[:200], b.text, plats, d, (b.time or "")[:5], st, b.idea_id,
+         db.jval(b.compliance or {}), b.rubric_id, (dt.datetime.now() if st == "pending" else None)))
     return {"ok": True, "id": row["id"]}
 
 
 @app.get("/api/plan")
 def plan_list(region_id: int | None = None, user=Depends(current_user)):
     rid = region_for(user, region_id)
-    rows = db.query("SELECT id,title,text,platforms,plan_date,plan_time,status,idea_id,created_at,published_url,publish_error "
+    rows = db.query("SELECT id,title,text,platforms,plan_date,plan_time,status,idea_id,rubric_id,review_note,created_at,published_url,publish_error "
                     "FROM cp_plan WHERE region_id=%s ORDER BY plan_date NULLS LAST, plan_time", (rid,))
     for r in rows:
         r["plan_date"] = r["plan_date"].isoformat() if r.get("plan_date") else ""
@@ -453,17 +332,41 @@ def plan_list(region_id: int | None = None, user=Depends(current_user)):
 class PlanStatus(BaseModel):
     id: int
     status: str
+    note: str | None = None
 
 
 @app.post("/api/plan/status")
 def plan_status(b: PlanStatus, user=Depends(current_user)):
-    if b.status not in ("draft", "ready", "published"):
+    if b.status not in PLAN_STATUSES:
         return {"ok": False, "error": "bad status"}
-    if user["role"] == "owner":
-        db.execute("UPDATE cp_plan SET status=%s WHERE id=%s", (b.status, b.id))
-    else:
-        db.execute("UPDATE cp_plan SET status=%s WHERE id=%s AND region_id=%s", (b.status, b.id, user["region_id"]))
+    is_owner = user["role"] == "owner"
+    if not is_owner and b.status not in MANAGER_STATUSES:
+        return {"ok": False, "error": "Одобрение и публикация — только у владельца"}
+    sets, vals = ["status=%s"], [b.status]
+    if b.status == "pending":
+        sets.append("submitted_at=now()")
+    if b.status in ("approved", "rejected"):   # сюда доходит только владелец
+        sets += ["reviewed_by=%s", "reviewed_at=now()", "review_note=%s"]
+        vals += [user["email"], (b.note or "")[:500]]
+    sql = "UPDATE cp_plan SET " + ", ".join(sets) + " WHERE id=%s"
+    vals.append(b.id)
+    if not is_owner:
+        sql += " AND region_id=%s"
+        vals.append(user["region_id"])
+    db.execute(sql, tuple(vals))
     return {"ok": True}
+
+
+@app.get("/api/moderation")
+def moderation(user=Depends(require_owner)):
+    rows = db.query(
+        "SELECT p.id,p.title,p.text,p.platforms,p.plan_date,p.plan_time,p.compliance,p.rubric_id,p.submitted_at, "
+        "r.name AS region FROM cp_plan p LEFT JOIN cp_regions r ON r.id=p.region_id "
+        "WHERE p.status='pending' ORDER BY p.submitted_at NULLS LAST, p.id")
+    for r in rows:
+        r["plan_date"] = r["plan_date"].isoformat() if r.get("plan_date") else ""
+        r["submitted_at"] = r["submitted_at"].isoformat() if r.get("submitted_at") else ""
+    return {"ok": True, "items": rows}
 
 
 @app.post("/api/plan/delete")
@@ -613,59 +516,17 @@ def _yt_collect(url):
     return out
 
 
-# ---- Telegram (публичные каналы через t.me/s, ключ не нужен; берём посты с видео) ----
-def _tg_channel(url):
-    u = (url or "").strip().rstrip("/").split("?")[0]
-    if "t.me/" in u:
-        u = u.split("t.me/")[-1]
-    return u.lstrip("@").split("/")[0]
-
-
-def _tg_num(s):
-    s = (s or "").strip().replace(" ", "").upper()
-    mult = 1
-    if s.endswith("K"):
-        mult, s = 1000, s[:-1]
-    elif s.endswith("M"):
-        mult, s = 1000000, s[:-1]
-    try:
-        return int(float(s.replace(",", ".")) * mult)
-    except Exception:
-        return 0
-
-
-def _tg_collect(url):
-    ch = _tg_channel(url)
-    r = requests.get(f"https://t.me/s/{ch}", headers={"User-Agent": "Mozilla/5.0"}, timeout=30)
-    if r.status_code != 200:
-        raise RuntimeError("канал недоступен (нужен публичный)")
-    out = []
-    for b in r.text.split('tgme_widget_message ')[1:]:
-        mp = re.search(r'data-post="([^"]+)"', b)
-        if not mp:
-            continue
-        if "tgme_widget_message_video" not in b and "message_video_player" not in b:
-            continue  # берём только посты с видео
-        vm = re.search(r'tgme_widget_message_views">([^<]+)<', b)
-        views = _tg_num(vm.group(1)) if vm else 0
-        tm = re.search(r'tgme_widget_message_text[^>]*>(.*?)</div>', b, re.S)
-        text = _html.unescape(re.sub("<[^>]+>", " ", tm.group(1))).strip()[:1000] if tm else ""
-        out.append({"post_url": f"https://t.me/{mp.group(1)}", "source_name": ch, "text": text,
-                    "likes": 0, "reposts": 0, "views": views, "comments": 0, "er": 0, "pdate": None})
-    return out
-
-
 # Площадки разведки. auto=True — есть авто-сбор; иначе добавляем ссылки на ролики вручную.
 SCOUT_PLATFORMS = [
     {"key": "vk", "name": "VK", "auto": True},
     {"key": "youtube", "name": "YouTube", "auto": True},
-    {"key": "telegram", "name": "Telegram", "auto": True},
+    {"key": "telegram", "name": "Telegram", "auto": False},
     {"key": "ok", "name": "Одноклассники", "auto": False},
     {"key": "instagram", "name": "Instagram", "auto": False},
     {"key": "tiktok", "name": "TikTok", "auto": False},
     {"key": "other", "name": "Другое", "auto": False},
 ]
-_COLLECTORS = {"vk": _vk_collect, "youtube": _yt_collect, "telegram": _tg_collect}
+_COLLECTORS = {"vk": _vk_collect, "youtube": _yt_collect}
 
 
 def _scout_save(rid, source_id, platform, it):
@@ -764,7 +625,7 @@ def scout_run(b: ScoutRun, user=Depends(current_user)):
 def scout_list(region_id: int | None = None, user=Depends(current_user)):
     rid = region_for(user, region_id)
     rows = db.query("SELECT id,platform,post_url,source_name,text,likes,reposts,views,comments,er,post_date,analyzed "
-                    "FROM cp_scout WHERE region_id=%s ORDER BY views DESC, er DESC, id DESC LIMIT 100", (rid,))
+                    "FROM cp_scout WHERE region_id=%s ORDER BY er DESC, id DESC LIMIT 100", (rid,))
     for r in rows:
         r["post_date"] = r["post_date"].isoformat()[:10] if r.get("post_date") else ""
     return {"ok": True, "scout": rows}
@@ -840,82 +701,16 @@ def _post_text(row):
     return (t + "\n\n" + body).strip() if body else t
 
 
-def _vk_method(token, method, **params):
-    """Вызов VK с ПЕРЕДАННЫМ токеном (не сервисным) — для публикации/фото/статистики."""
-    params.update({"access_token": token, "v": VK_V})
-    j = requests.get(VK_API + method, params=params, timeout=30).json()
-    if "error" in j:
-        raise RuntimeError(j["error"].get("error_msg", "VK error"))
-    return j.get("response")
-
-
-def _vk_upload_photo_bytes(token, gid, img_bytes):
-    srv = _vk_method(token, "photos.getWallUploadServer", group_id=gid)
-    up = requests.post(srv["upload_url"], files={"photo": ("image.jpg", img_bytes)}, timeout=60).json()
-    saved = _vk_method(token, "photos.saveWallPhoto", group_id=gid, server=up["server"], photo=up["photo"], hash=up["hash"])
-    p = saved[0]
-    return f"photo{p['owner_id']}_{p['id']}"
-
-
-def _vk_upload_photo(token, gid, image_url):
-    """Скачивает картинку по URL и грузит в сообщество. Требует токен с правом photos."""
-    img = requests.get(image_url, timeout=30)
-    if img.status_code != 200:
-        raise RuntimeError("не удалось скачать картинку")
-    return _vk_upload_photo_bytes(token, gid, img.content)
-
-
-def _vk_upload_video(token, gid, video_url):
-    """Скачивает видео по URL и грузит в сообщество → attachment 'video{owner}_{id}'.
-    Требует токен с правом video (обычно токен пользователя-админа)."""
-    save = _vk_method(token, "video.save", group_id=gid, name="video", wallpost=1)
-    vid = requests.get(video_url, timeout=180)
-    if vid.status_code != 200:
-        raise RuntimeError("не удалось скачать видео")
-    requests.post(save["upload_url"], files={"video_file": ("video.mp4", vid.content)}, timeout=600)
-    return f"video{save['owner_id']}_{save['video_id']}"
-
-
-def _vk_publish(token, group_id, text, image_url="", video_url="", image_data=""):
+def _vk_publish(token, group_id, text):
     gid = str(group_id).lstrip("-").strip()
     if not gid:
         raise RuntimeError("не указан ID сообщества VK")
-    atts = []
-    if image_data:
-        try:
-            atts.append(_vk_upload_photo_bytes(token, gid, base64.b64decode(image_data)))
-        except Exception:
-            pass  # сгенерированная картинка не загрузилась — публикуем без неё
-    elif image_url:
-        try:
-            atts.append(_vk_upload_photo(token, gid, image_url))
-        except Exception:
-            pass  # не вышло с картинкой — публикуем без неё
-    if video_url:
-        try:
-            atts.append(_vk_upload_video(token, gid, video_url))
-        except Exception:
-            pass
-    params = {"owner_id": f"-{gid}", "from_group": 1, "message": text, "access_token": token, "v": VK_V}
-    if atts:
-        params["attachments"] = ",".join(atts)
-    r = requests.get(VK_API + "wall.post", params=params, timeout=30).json()
+    r = requests.get(VK_API + "wall.post", params={
+        "owner_id": f"-{gid}", "from_group": 1, "message": text, "access_token": token, "v": VK_V}, timeout=30).json()
     if "error" in r:
         raise RuntimeError(r["error"].get("error_msg", "VK error"))
     pid = r.get("response", {}).get("post_id")
     return f"https://vk.com/wall-{gid}_{pid}"
-
-
-def _vk_stats(token, post_url):
-    tail = post_url.split("/wall")[-1]  # напр. -123_456
-    r = _vk_method(token, "wall.getById", posts=tail)
-    it = {}
-    if isinstance(r, list) and r:
-        it = r[0]
-    elif isinstance(r, dict):
-        it = (r.get("items") or [{}])[0]
-    return {"likes": (it.get("likes") or {}).get("count", 0), "reposts": (it.get("reposts") or {}).get("count", 0),
-            "comments": (it.get("comments") or {}).get("count", 0), "views": (it.get("views") or {}).get("count", 0)}
 
 
 def _ok_publish(token, gid, text):
@@ -947,8 +742,7 @@ def _publish_row(row):
             continue
         try:
             if plat == "vk":
-                urls.append(_vk_publish(acc["token"], acc["group_id"], text, row.get("image_url") or "",
-                                        row.get("video_url") or "", row.get("image_data") or ""))
+                urls.append(_vk_publish(acc["token"], acc["group_id"], text))
             elif plat == "ok":
                 urls.append(_ok_publish(acc["token"], acc["group_id"], text))
             else:
@@ -965,6 +759,8 @@ def plan_publish(b: IdIn, user=Depends(current_user)):
         return {"ok": False, "error": "не найдено"}
     if user["role"] != "owner" and row["region_id"] != user.get("region_id"):
         raise HTTPException(403, "чужой регион")
+    if user["role"] != "owner" and row.get("status") != "approved":
+        return {"ok": False, "error": "Пост не одобрен владельцем — отправьте на согласование"}
     url, err = _publish_row(row)
     if url:
         db.execute("UPDATE cp_plan SET status='published',published_url=%s,publish_error=%s,published_at=now() WHERE id=%s",
@@ -974,68 +770,10 @@ def plan_publish(b: IdIn, user=Depends(current_user)):
     return {"ok": False, "error": err or "не удалось"}
 
 
-# ---------------- Контролёр результатов ----------------
-def _refresh_metrics(rid):
-    rows = db.query("SELECT id,platforms,published_url FROM cp_plan "
-                    "WHERE region_id=%s AND status='published' AND published_url IS NOT NULL", (rid,))
-    acc = db.query_one("SELECT token FROM cp_social WHERE region_id=%s AND platform='vk'", (rid,))
-    if not acc or not acc.get("token"):
-        return 0
-    n = 0
-    for row in rows:
-        if "vk" not in (row.get("platforms") or []):
-            continue
-        try:
-            st = _vk_stats(acc["token"], row["published_url"])
-            db.execute("UPDATE cp_plan SET metrics=%s, metrics_at=now() WHERE id=%s", (db.jval({"vk": st}), row["id"]))
-            n += 1
-        except Exception:
-            pass
-    return n
-
-
-@app.post("/api/plan/refresh")
-def plan_refresh(b: ScoutRun, user=Depends(current_user)):
-    rid = region_for(user, b.region_id)
-    return {"ok": True, "updated": _refresh_metrics(rid)}
-
-
-@app.get("/api/results")
-def results(region_id: int | None = None, user=Depends(current_user)):
-    rid = region_for(user, region_id)
-    rows = db.query("SELECT id,title,platforms,published_url,metrics,metrics_at,published_at FROM cp_plan "
-                    "WHERE region_id=%s AND status='published' ORDER BY published_at DESC NULLS LAST", (rid,))
-    for r in rows:
-        r["metrics_at"] = r["metrics_at"].isoformat()[:16].replace("T", " ") if r.get("metrics_at") else ""
-        r["published_at"] = r["published_at"].isoformat()[:10] if r.get("published_at") else ""
-    return {"ok": True, "results": rows}
-
-
-@app.post("/api/results/advice")
-def results_advice(b: ScoutRun, user=Depends(current_user)):
-    rid = region_for(user, b.region_id)
-    rows = db.query("SELECT title,platforms,metrics FROM cp_plan "
-                    "WHERE region_id=%s AND status='published' AND metrics IS NOT NULL", (rid,))
-    if not rows:
-        return {"ok": False, "error": "Нет опубликованных постов со статистикой. Нажмите «Обновить статистику»."}
-    lines = []
-    for r in rows:
-        m = (r.get("metrics") or {}).get("vk", {})
-        lines.append(f"- {r['title']} [{','.join(r.get('platforms') or [])}]: просмотры {m.get('views', 0)}, "
-                     f"лайки {m.get('likes', 0)}, репосты {m.get('reposts', 0)}, комменты {m.get('comments', 0)}")
-    prompt = ("Ты — контролёр результатов контента для медицинских клиник. По статистике опубликованных постов ниже дай "
-              'СТРОГО JSON без markdown: {"scale":["2-3 формата/темы, которые заходят — масштабировать"],'
-              '"drop":["что убрать/не повторять"],"next":["2-3 темы на следующий цикл"],"summary":"1-2 предложения вывода"}. '
-              "По-русски, конкретно.\n\nПОСТЫ:\n" + "\n".join(lines))
-    obj, err = _claude_json(prompt, 900)
-    if err:
-        return {"ok": False, "error": err}
-    return {"ok": True, **obj}
-
-
 def _due_publish():
     now = dt.datetime.now(dt.timezone(dt.timedelta(hours=3))).replace(tzinfo=None)  # МСК
-    rows = db.query("SELECT * FROM cp_plan WHERE status='ready' AND plan_date IS NOT NULL")
+    # публикуем по расписанию только одобренные владельцем посты
+    rows = db.query("SELECT * FROM cp_plan WHERE status='approved' AND plan_date IS NOT NULL")
     for row in rows:
         pt = (row.get("plan_time") or "00:00")
         try:
@@ -1053,28 +791,70 @@ def _due_publish():
             db.execute("UPDATE cp_plan SET publish_error=%s WHERE id=%s", (err or "не удалось", row["id"]))
 
 
-_sched_tick = 0
-
-
 def _scheduler_loop():
-    global _sched_tick
     while True:
         try:
             if db.available():
                 _due_publish()
-                _sched_tick += 1
-                if _sched_tick % 30 == 0:      # каждые ~30 мин обновляем статистику
-                    for reg in db.query("SELECT id FROM cp_regions"):
-                        try:
-                            _refresh_metrics(reg["id"])
-                        except Exception:
-                            pass
         except Exception as e:
             print("scheduler:", e)
         time.sleep(60)
 
 
 threading.Thread(target=_scheduler_loop, daemon=True).start()
+
+
+# ---------------- Фирменный стиль и рубрики ----------------
+class BrandIn(BaseModel):
+    name: str = ""
+    primary_color: str = ""
+    accent_color: str = ""
+    tone: str = ""
+    disclaimer: str = ""
+    hashtags: str = ""
+    signature: str = ""
+    logo_url: str = ""
+
+
+@app.get("/api/brand")
+def brand_get(user=Depends(current_user)):
+    row = db.query_one("SELECT name,primary_color,accent_color,tone,disclaimer,hashtags,signature,logo_url FROM cp_brand WHERE id=1")
+    return {"ok": True, "brand": row or {}}
+
+
+@app.post("/api/brand")
+def brand_set(b: BrandIn, user=Depends(require_owner)):
+    db.execute("UPDATE cp_brand SET name=%s,primary_color=%s,accent_color=%s,tone=%s,disclaimer=%s,"
+               "hashtags=%s,signature=%s,logo_url=%s,updated_at=now() WHERE id=1",
+               (b.name[:120], b.primary_color[:16], b.accent_color[:16], b.tone[:1000],
+                b.disclaimer[:500], b.hashtags[:500], b.signature[:300], b.logo_url[:500]))
+    return {"ok": True}
+
+
+@app.get("/api/rubrics")
+def rubrics_list(user=Depends(current_user)):
+    rows = db.query("SELECT id,title,hint,active FROM cp_rubrics WHERE active ORDER BY id")
+    return {"ok": True, "rubrics": rows}
+
+
+class RubricIn(BaseModel):
+    title: str
+    hint: str = ""
+
+
+@app.post("/api/rubrics/add")
+def rubrics_add(b: RubricIn, user=Depends(require_owner)):
+    if not (b.title or "").strip():
+        return {"ok": False, "error": "нужно название"}
+    row = db.query_one("INSERT INTO cp_rubrics(title,hint) VALUES(%s,%s) RETURNING id",
+                       (b.title.strip()[:120], (b.hint or "")[:500]))
+    return {"ok": True, "id": row["id"]}
+
+
+@app.post("/api/rubrics/delete")
+def rubrics_delete(b: IdIn, user=Depends(require_owner)):
+    db.execute("UPDATE cp_rubrics SET active=false WHERE id=%s", (b.id,))
+    return {"ok": True}
 
 
 # ---------------- Статика (веб-интерфейс) ----------------

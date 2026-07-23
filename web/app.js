@@ -31,9 +31,9 @@ async function boot() {
   PROFILE = me.profile;
   $("login").classList.add("hidden"); $("app").classList.remove("hidden");
   $("whoami").textContent = (PROFILE.name || PROFILE.email) + (PROFILE.role === "owner" ? " · владелец" : "");
-  if (PROFILE.role === "owner") $("tab-team").classList.remove("hidden");
-  const [rg, pl] = await Promise.all([api("regions"), api("platforms")]);
-  REGIONS = (rg.regions || []); PLATFORMS = (pl.platforms || []);
+  if (PROFILE.role === "owner") { $("tab-team").classList.remove("hidden"); $("tab-mod").classList.remove("hidden"); }
+  const [rg, pl, ru] = await Promise.all([api("regions"), api("platforms"), api("rubrics")]);
+  REGIONS = (rg.regions || []); PLATFORMS = (pl.platforms || []); window.RUBRICS = (ru.rubrics || []);
   const sel = $("regionSel"); sel.innerHTML = REGIONS.map((r) => `<option value="${r.id}">${esc(r.name)}</option>`).join("");
   CUR_REGION = REGIONS.length ? REGIONS[0].id : null;
   if (REGIONS.length <= 1) sel.classList.add("hidden");
@@ -54,10 +54,11 @@ function renderCurrent() {
   if (TAB === "viral") renderViral();
   else if (TAB === "scout") renderScout();
   else if (TAB === "plan") renderPlan();
-  else if (TAB === "results") renderResults();
-  else if (TAB === "studio") renderStudio();
+  else if (TAB === "mod") renderModeration();
   else renderTeam();
 }
+const ST_NAME = { draft: "Черновик", pending: "На согласовании", approved: "Одобрено", rejected: "Отклонено", published: "Опубликовано" };
+function rubName(id) { const r = (window.RUBRICS || []).find((x) => x.id === id); return r ? r.title : ""; }
 
 /* ---------- Вирусное ---------- */
 async function renderViral() {
@@ -69,7 +70,6 @@ async function renderViral() {
       <textarea id="v-note" placeholder="Описание: о чём ролик, что цепляет (по желанию)" style="width:100%;min-height:64px;margin-bottom:8px"></textarea>
       <button class="btn primary" onclick="doAnalyze()">Анализировать</button>
     </div>
-    <div id="genResult"></div>
     <div class="card">
       <h2>Найденные идеи</h2>
       <div id="ideaList"><div class="empty">Загружаю…</div></div>
@@ -89,7 +89,6 @@ async function loadIdeas() {
   const r = await api("ideas?region_id=" + CUR_REGION);
   const box = $("ideaList"); if (!box) return;
   const list = (r.ideas || []);
-  window.__ideas = list;
   box.innerHTML = list.length ? list.map(ideaCard).join("") : `<div class="empty">Пока пусто. Разберите первый ролик выше ↑</div>`;
 }
 function ideaCard(row) {
@@ -107,51 +106,12 @@ function ideaCard(row) {
     ${c.why_viral ? `<div class="line"><b>Почему зашло:</b> ${esc(c.why_viral)}</div>` : ""}
     ${apps ? `<div class="apps"><b>Перенос на направления:</b>${apps}</div>` : ""}
     <div class="actions">
-      <button class="btn primary sm" onclick="genPost(${row.id})">✍️ Сделать пост</button>
-      <button class="btn ghost sm" onclick='toPlan(${row.id})'>→ В план (черновик)</button>
+      <button class="btn ghost sm" onclick='toPlan(${row.id})'>→ В контент-план</button>
       <button class="link" onclick="delIdea(${row.id})">Удалить</button>
     </div>
   </div>`;
 }
 async function delIdea(id) { const r = await api("ideas/delete", { id }); toast(r.ok ? "Удалено ✓" : "Не удалось"); loadIdeas(); }
-
-/* агент-сценарист: из идеи → готовый пост */
-async function genPost(id) {
-  const c = (window.__ideas || []).find((x) => x.id === id); if (!c) return;
-  const d = c.data || {}, app = (d.applicability && d.applicability[0]) || {};
-  toast("Пишу пост… 10–20 сек");
-  const r = await api("script/generate", { region_id: CUR_REGION, theme: d.theme || "", hook: d.hook || "", direction: app.direction || "", idea: app.idea || "" });
-  if (!r.ok) { toast(r.error || "Не удалось"); return; }
-  window.__script = r.script; renderGen(r.script);
-}
-function renderGen(s) {
-  const box = $("genResult"); if (!box) return;
-  const cm = s.compliance || {};
-  const cbadge = cm.art24_ok === false ? `<span class="badge bad">ст.24: ${esc((cm.flags || []).join("; "))}</span>` : `<span class="badge ok">ст.24 ок</span>`;
-  const ebadge = cm.needs_erid ? `<span class="badge ad">реклама · нужен erid</span>` : `<span class="badge org">органика</span>`;
-  box.innerHTML = `<div class="card" style="border-color:var(--red)">
-    <h2>Готовый пост</h2>
-    ${(s.headlines || []).length ? `<div class="line"><b>Заголовки:</b> ${(s.headlines || []).map(esc).join(" · ")}</div>` : ""}
-    <div class="line" style="margin-top:8px"><b>VK:</b></div><div style="white-space:pre-wrap;font-size:14px">${esc(s.post_vk || "")}</div>
-    <div class="line" style="margin-top:8px"><b>OK:</b></div><div style="white-space:pre-wrap;font-size:14px">${esc(s.post_ok || "")}</div>
-    <div class="meta" style="margin-top:8px">${cbadge} ${ebadge}</div>
-    <div class="actions">
-      <button class="btn ghost sm" onclick="scriptToPlan('vk')">В план — версия VK</button>
-      <button class="btn ghost sm" onclick="scriptToPlan('ok')">В план — версия OK</button>
-      <button class="link" onclick="document.getElementById('genResult').innerHTML=''">скрыть</button>
-    </div></div>`;
-  box.scrollIntoView({ behavior: "smooth", block: "start" });
-}
-function scriptToPlan(which) {
-  const s = window.__script; if (!s) return;
-  switchTab("plan");
-  setTimeout(() => {
-    if ($("p-title")) $("p-title").value = s.title || "";
-    if ($("p-text")) $("p-text").value = (which === "ok" ? s.post_ok : s.post_vk) || "";
-    window.__planCompliance = s.compliance || {};
-    toast("Пост перенесён в план — выбери площадку и дату");
-  }, 60);
-}
 
 /* ---------- Разведка (мультиплатформа) ---------- */
 let SCOUT_PLATS = [], SCOUT_READY = {};
@@ -269,17 +229,13 @@ async function renderPlan() {
       <input id="p-title" placeholder="Заголовок / тема" style="width:100%;margin-bottom:8px">
       <textarea id="p-text" placeholder="Текст поста / сценарий" style="width:100%;min-height:90px;margin-bottom:8px"></textarea>
       <div class="row" style="margin-bottom:8px">
-        <input id="p-imgprompt" placeholder="🎨 Обложка ИИ: опиши картинку (пусто — по заголовку)" style="flex:3">
-        <button class="btn ghost" onclick="genImage()">Сгенерировать обложку</button>
+        <select id="p-rubric" style="flex:1"><option value="">Рубрика (по желанию)</option>${(window.RUBRICS || []).map((r) => `<option value="${r.id}">${esc(r.title)}</option>`).join("")}</select>
       </div>
-      <div id="p-imgprev"></div>
-      <input id="p-image" placeholder="…или ссылка на готовую картинку (URL)" style="width:100%;margin-bottom:8px">
-      <input id="p-video" placeholder="Ссылка на видеофайл (URL .mp4, необязательно — загрузится в VK)" style="width:100%;margin-bottom:8px">
       <div class="plats">${plats}</div>
       <div class="row">
         <input id="p-date" type="date">
         <input id="p-time" type="time">
-        <select id="p-status"><option value="draft">Черновик</option><option value="ready">Готово к публикации</option></select>
+        <select id="p-status"><option value="draft">Черновик</option><option value="pending">Отправить на согласование</option></select>
       </div>
       <div style="margin-top:10px"><button class="btn primary" onclick="addPlan()">Добавить в план</button></div>
     </div>
@@ -287,7 +243,6 @@ async function renderPlan() {
       <h2>Контент-план региона</h2>
       <div id="planList"><div class="empty">Загружаю…</div></div>
     </div>`;
-  if (window.__planImageData && $("p-imgprev")) $("p-imgprev").innerHTML = `<img src="data:image/png;base64,${window.__planImageData}" style="max-width:220px;border-radius:10px;margin:6px 0;display:block"><button class="link" onclick="clearImg()">убрать обложку</button>`;
   loadSocial(); loadPlan();
 }
 async function loadSocial() {
@@ -318,17 +273,6 @@ async function publishNow(id) {
   toast(r.ok ? "Опубликовано ✓" : (r.error || "Не удалось")); loadPlan();
 }
 function togglePlat(k, elx) { PICK[k] = !PICK[k]; elx.classList.toggle("on", !!PICK[k]); }
-async function genImage() {
-  const prompt = ($("p-imgprompt").value.trim()) || ($("p-title") ? $("p-title").value.trim() : "");
-  if (!prompt) { toast("Опиши картинку или заполни заголовок"); return; }
-  toast("Рисую обложку… 15–30 сек");
-  const r = await api("image/generate", { region_id: CUR_REGION, prompt });
-  if (!r.ok) { toast(r.error || "Не удалось"); return; }
-  window.__planImageData = r.image_b64;
-  $("p-imgprev").innerHTML = `<img src="data:image/png;base64,${r.image_b64}" style="max-width:220px;border-radius:10px;margin:6px 0;display:block"><button class="link" onclick="clearImg()">убрать обложку</button>`;
-  toast("Готово ✓ — приложится к посту");
-}
-function clearImg() { window.__planImageData = ""; if ($("p-imgprev")) $("p-imgprev").innerHTML = ""; }
 async function addPlan() {
   const title = $("p-title").value.trim(), text = $("p-text").value.trim();
   const platforms = Object.keys(PICK).filter((k) => PICK[k]);
@@ -337,15 +281,11 @@ async function addPlan() {
   const r = await api("plan/add", {
     region_id: CUR_REGION, title, text, platforms,
     date: $("p-date").value, time: $("p-time").value, status: $("p-status").value,
-    idea_id: window.__planIdeaId || null, compliance: window.__planCompliance || {},
-    image_url: ($("p-image") ? $("p-image").value.trim() : ""),
-    video_url: ($("p-video") ? $("p-video").value.trim() : ""),
-    image_data: (window.__planImageData || "")
+    rubric_id: ($("p-rubric") && $("p-rubric").value) ? Number($("p-rubric").value) : null,
+    idea_id: window.__planIdeaId || null, compliance: window.__planCompliance || {}
   });
   if (!r.ok) { toast(r.error || "Не удалось"); return; }
-  $("p-title").value = ""; $("p-text").value = ""; if ($("p-image")) $("p-image").value = ""; if ($("p-video")) $("p-video").value = "";
-  window.__planImageData = ""; if ($("p-imgprev")) $("p-imgprev").innerHTML = ""; if ($("p-imgprompt")) $("p-imgprompt").value = "";
-  window.__planIdeaId = null; window.__planCompliance = null;
+  $("p-title").value = ""; $("p-text").value = ""; window.__planIdeaId = null; window.__planCompliance = null;
   toast("В плане ✓"); loadPlan();
 }
 async function loadPlan() {
@@ -353,129 +293,70 @@ async function loadPlan() {
   const box = $("planList"); if (!box) return;
   const list = (r.plan || []);
   if (!list.length) { box.innerHTML = `<div class="empty">План пуст. Добавьте публикацию выше ↑</div>`; return; }
+  const isOwner = PROFILE.role === "owner";
   box.innerHTML = `<table><thead><tr><th>Дата</th><th>Тема</th><th>Площадки</th><th>Статус</th><th></th></tr></thead><tbody>${
     list.map((p) => {
       const pl = (p.platforms || []).map((k) => (PLATFORMS.find((x) => x.key === k) || { name: k }).name).join(", ");
       const when = (p.plan_date || "—") + (p.plan_time ? " " + p.plan_time : "");
-      const nextSt = p.status === "draft" ? "ready" : (p.status === "ready" ? "published" : "draft");
-      const stName = { draft: "Черновик", ready: "Готово", published: "Опубликовано" }[p.status] || p.status;
+      const rub = p.rubric_id ? `<div style="font-size:12px;color:var(--muted);margin-top:2px">рубрика: ${esc(rubName(p.rubric_id))}</div>` : "";
       const pub = p.published_url ? `<div style="font-size:12px;margin-top:3px"><a href="${esc(p.published_url)}" target="_blank" rel="noopener">опубликовано ↗</a></div>` : "";
       const perr = p.publish_error ? `<div style="font-size:12px;color:var(--red);margin-top:3px">${esc(p.publish_error)}</div>` : "";
-      const canPub = p.status !== "published";
+      const note = (p.status === "rejected" && p.review_note) ? `<div style="font-size:12px;color:var(--red);margin-top:3px">причина: ${esc(p.review_note)}</div>` : "";
+      let act = "";
+      if (isOwner) {
+        if (p.status === "pending") act += `<button class="btn primary sm" onclick="approvePlan(${p.id})">Одобрить</button> <button class="btn ghost sm" onclick="rejectPlan(${p.id})">Отклонить</button> `;
+        if (p.status !== "published") act += `<button class="btn ghost sm" onclick="publishNow(${p.id})">Опубликовать</button> `;
+      } else {
+        if (p.status === "draft" || p.status === "rejected") act += `<button class="btn primary sm" onclick="submitPlan(${p.id})">На согласование</button> `;
+        else if (p.status === "pending") act += `<span style="color:var(--muted);font-size:13px">ждёт одобрения</span> `;
+        else if (p.status === "approved") act += `<button class="btn ghost sm" onclick="publishNow(${p.id})">Опубликовать</button> `;
+      }
       return `<tr>
         <td>${esc(when)}</td>
-        <td><b>${esc(p.title)}</b>${p.text ? `<div style="color:var(--muted);font-size:13px;margin-top:2px">${esc(p.text).slice(0, 120)}</div>` : ""}</td>
+        <td><b>${esc(p.title)}</b>${p.text ? `<div style="color:var(--muted);font-size:13px;margin-top:2px">${esc(p.text).slice(0, 120)}</div>` : ""}${rub}</td>
         <td>${esc(pl)}</td>
-        <td><span class="badge st-${p.status}" style="cursor:pointer" onclick="cycleStatus(${p.id},'${nextSt}')">${stName}</span>${pub}${perr}</td>
-        <td>${canPub ? `<button class="btn ghost sm" onclick="publishNow(${p.id})">Опубликовать</button> ` : ""}<button class="link" onclick="delPlan(${p.id})">Удалить</button></td>
+        <td><span class="badge st-${p.status}">${ST_NAME[p.status] || p.status}</span>${pub}${perr}${note}</td>
+        <td>${act}<button class="link" onclick="delPlan(${p.id})">Удалить</button></td>
       </tr>`;
     }).join("")}</tbody></table>`;
 }
-async function cycleStatus(id, st) { const r = await api("plan/status", { id, status: st }); if (r.ok) loadPlan(); }
+async function submitPlan(id) { const r = await api("plan/status", { id, status: "pending" }); toast(r.ok ? "Отправлено на согласование ✓" : (r.error || "Не удалось")); loadPlan(); }
+async function approvePlan(id) { const r = await api("plan/status", { id, status: "approved" }); toast(r.ok ? "Одобрено ✓" : (r.error || "Не удалось")); loadPlan(); if (TAB === "mod") renderModeration(); }
+async function rejectPlan(id) { const note = prompt("Причина отклонения (необязательно):", ""); if (note === null) return; const r = await api("plan/status", { id, status: "rejected", note }); toast(r.ok ? "Отклонено" : (r.error || "Не удалось")); loadPlan(); if (TAB === "mod") renderModeration(); }
 async function delPlan(id) { const r = await api("plan/delete", { id }); toast(r.ok ? "Удалено ✓" : "Не удалось"); loadPlan(); }
 
-/* ---------- Результаты (контролёр) ---------- */
-async function renderResults() {
-  $("pane-results").innerHTML = `
-    <div class="card">
-      <h2>Результаты публикаций</h2>
-      <div class="hint">Статистика опубликованных постов (VK). Обновляется автоматически ~раз в 30 мин; можно и вручную.</div>
-      <div style="margin:6px 0;display:flex;gap:8px;flex-wrap:wrap">
-        <button class="btn ghost" onclick="refreshStats()">Обновить статистику</button>
-        <button class="btn primary" onclick="resultsAdvice()">Совет ИИ — что масштабировать</button>
+/* ---------- Модерация (владелец) ---------- */
+async function renderModeration() {
+  if (PROFILE.role !== "owner") { $("pane-mod").innerHTML = ""; return; }
+  $("pane-mod").innerHTML = `<div class="card"><h2>На согласовании</h2><div class="hint">Посты регионов ждут вашего решения. Одобренные уходят в публикацию (по расписанию или вручную). Пока не одобрено — ничего не публикуется.</div><div id="modList"><div class="empty">Загружаю…</div></div></div>`;
+  const r = await api("moderation");
+  const box = $("modList"); if (!box) return;
+  const list = (r.items || []);
+  if (!list.length) { box.innerHTML = `<div class="empty">Пусто — новых постов на согласование нет.</div>`; return; }
+  box.innerHTML = list.map((p) => {
+    const pl = (p.platforms || []).map((k) => (PLATFORMS.find((x) => x.key === k) || { name: k }).name).join(", ");
+    const when = (p.plan_date || "—") + (p.plan_time ? " " + p.plan_time : "");
+    const rub = p.rubric_id ? ` · рубрика: ${esc(rubName(p.rubric_id))}` : "";
+    return `<div class="card" style="border:1px solid var(--line);margin-bottom:10px">
+      <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap">
+        <b>${esc(p.region || "—")}</b><span style="color:var(--muted);font-size:13px">${esc(when)} · ${esc(pl)}${rub}</span>
       </div>
-      <div id="adviceBox"></div>
-      <div id="resList" style="margin-top:10px"><div class="empty">Загружаю…</div></div>
-    </div>`;
-  loadResults();
-}
-async function loadResults() {
-  const r = await api("results?region_id=" + CUR_REGION);
-  const box = $("resList"); if (!box) return;
-  const list = (r.results || []);
-  if (!list.length) { box.innerHTML = `<div class="empty">Пока нет опубликованных постов.</div>`; return; }
-  box.innerHTML = `<table><thead><tr><th>Дата</th><th>Пост</th><th>👁</th><th>👍</th><th>🔁</th><th>💬</th><th></th></tr></thead><tbody>${
-    list.map((p) => {
-      const m = (p.metrics && p.metrics.vk) || {};
-      const link = p.published_url ? `<a href="${esc(p.published_url)}" target="_blank" rel="noopener">открыть ↗</a>` : "";
-      return `<tr><td>${esc(p.published_at || "")}</td><td><b>${esc(p.title)}</b></td>
-        <td>${m.views || 0}</td><td>${m.likes || 0}</td><td>${m.reposts || 0}</td><td>${m.comments || 0}</td><td>${link}</td></tr>`;
-    }).join("")}</tbody></table>`;
-}
-async function refreshStats() {
-  toast("Обновляю статистику…");
-  const r = await api("plan/refresh", { region_id: CUR_REGION });
-  toast(r.ok ? `Обновлено постов: ${r.updated}` : (r.error || "Не удалось")); loadResults();
-}
-async function resultsAdvice() {
-  toast("Анализирую результаты… 10–20 сек");
-  const r = await api("results/advice", { region_id: CUR_REGION });
-  const box = $("adviceBox"); if (!box) return;
-  if (!r.ok) { box.innerHTML = `<div class="hint" style="color:var(--red)">${esc(r.error || "Не удалось")}</div>`; return; }
-  const li = (arr) => (arr || []).map((x) => `<li>${esc(x)}</li>`).join("");
-  box.innerHTML = `<div class="card" style="border-color:var(--red);margin-top:8px">
-    <div class="line"><b>${esc(r.summary || "")}</b></div>
-    <div class="line" style="margin-top:6px"><b>📈 Масштабировать:</b><ul>${li(r.scale)}</ul></div>
-    <div class="line"><b>🗑 Убрать / не повторять:</b><ul>${li(r.drop)}</ul></div>
-    <div class="line"><b>➡️ На следующий цикл:</b><ul>${li(r.next)}</ul></div>
-  </div>`;
-}
-
-/* ---------- Студия обложек (чат + фирстиль) ---------- */
-async function renderStudio() {
-  const br = await api("brand?region_id=" + CUR_REGION);
-  const style = (br && br.style) || "";
-  window.__studioThread = window.__studioThread || [];
-  $("pane-studio").innerHTML = `
-    <div class="card">
-      <h2>Фирменный стиль</h2>
-      <div class="hint">Опиши стиль клиники (цвета, настроение, что нельзя). ИИ будет держать его во всех картинках.</div>
-      <textarea id="brand-style" style="width:100%;min-height:72px" placeholder="Напр.: фирменный красный #E1191C, чистый минимализм, доверие и забота, светлые тона, реальные люди без стоковых улыбок, без текста на изображении">${esc(style)}</textarea>
-      <button class="btn ghost" style="margin-top:8px" onclick="saveBrand()">Сохранить стиль</button>
-    </div>
-    <div class="card">
-      <h2>Студия обложек</h2>
-      <div class="hint">Напиши, что понравилось / что хочешь на картинке — ИИ сделает обложку в вашем стиле. Можно уточнять: «сделай теплее», «другой ракурс».</div>
-      <div id="studioThread" style="display:flex;flex-direction:column;gap:14px;margin:12px 0"></div>
-      <div class="row">
-        <input id="studio-in" placeholder="Напр.: как тот пост про чекапы, только светлее и с врачом у окна" style="flex:4">
-        <button class="btn primary" onclick="studioSend()">Сгенерировать</button>
+      <div style="font-weight:600;margin-top:6px">${esc(p.title)}</div>
+      <div style="white-space:pre-wrap;color:var(--muted);font-size:13px;margin-top:4px">${esc(p.text || "")}</div>
+      ${complianceLine(p.compliance)}
+      <div style="margin-top:8px">
+        <button class="btn primary sm" onclick="approvePlan(${p.id})">Одобрить</button>
+        <button class="btn ghost sm" onclick="rejectPlan(${p.id})">Отклонить</button>
       </div>
     </div>`;
-  const inp = $("studio-in"); if (inp) inp.addEventListener("keydown", (e) => { if (e.key === "Enter") studioSend(); });
-  renderThread();
+  }).join("");
 }
-async function saveBrand() {
-  const r = await api("brand", { region_id: CUR_REGION, style: $("brand-style").value.trim() });
-  toast(r.ok ? "Стиль сохранён ✓" : "Не удалось");
-}
-function renderThread() {
-  const box = $("studioThread"); if (!box) return;
-  const t = window.__studioThread || [];
-  box.innerHTML = t.length ? t.map((m, i) => `
-    <div>
-      <div style="font-size:14px;color:var(--muted)">🗨 ${esc(m.text)}</div>
-      ${m.image ? `<img src="data:image/png;base64,${m.image}" style="max-width:300px;border-radius:12px;margin-top:6px;display:block">
-        <div class="actions"><button class="btn ghost sm" onclick="studioToPlan(${i})">→ В план как обложку</button></div>` : `<div class="hint">рисую…</div>`}
-    </div>`).join("") : `<div class="empty">Пока пусто — напиши идею ниже ↓</div>`;
-}
-async function studioSend() {
-  const text = $("studio-in").value.trim();
-  if (!text) return;
-  $("studio-in").value = "";
-  window.__studioThread.push({ text, image: "" }); renderThread();
-  toast("Рисую… 15–30 сек");
-  const r = await api("studio/generate", { region_id: CUR_REGION, text });
-  const item = window.__studioThread[window.__studioThread.length - 1];
-  if (!r.ok) { item.text += "  (ошибка: " + (r.error || "не удалось") + ")"; toast(r.error || "Не удалось"); }
-  else { item.image = r.image_b64; toast("Готово ✓"); }
-  renderThread();
-}
-function studioToPlan(i) {
-  const m = window.__studioThread[i]; if (!m || !m.image) return;
-  window.__planImageData = m.image;
-  switchTab("plan");
-  setTimeout(() => toast("Обложка перенесена в план ✓ — заполни текст и дату"), 80);
+function complianceLine(c) {
+  if (!c || typeof c !== "object") return "";
+  const bad = c.ok === false || c.violation || c.risk || (Array.isArray(c.violations) && c.violations.length) || c.status === "bad" || c.compliant === false;
+  if (!bad) return "";
+  const txt = c.note || c.reason || (Array.isArray(c.violations) ? c.violations.join("; ") : "") || "проверьте на соответствие ст. 24 ФЗ «О рекламе»";
+  return `<div style="margin-top:6px;color:var(--red);font-size:13px">⚠ Комплаенс: ${esc(String(txt)).slice(0, 240)}</div>`;
 }
 
 /* ---------- Команда (владелец) ---------- */
@@ -496,9 +377,54 @@ async function renderTeam() {
         <button class="btn primary" onclick="addUser()">Добавить</button>
       </div>
     </div>
-    <div class="card"><h2>Пользователи</h2><div id="userList"><div class="empty">Загружаю…</div></div></div>`;
-  loadUsers();
+    <div class="card"><h2>Пользователи</h2><div id="userList"><div class="empty">Загружаю…</div></div></div>
+    <div class="card">
+      <h2>Фирменный стиль</h2>
+      <div class="hint">Единый стиль для всех регионов: тон, дисклеймер, хэштеги, подпись, цвета. Ориентир при подготовке контента.</div>
+      <div id="brandBox"><div class="empty">Загружаю…</div></div>
+    </div>
+    <div class="card">
+      <h2>Рубрики</h2>
+      <div class="hint">Готовые темы, из которых регионы выбирают при планировании поста.</div>
+      <div id="rubBox"><div class="empty">Загружаю…</div></div>
+      <div class="row" style="margin-top:8px">
+        <input id="rb-title" placeholder="Название рубрики" style="flex:1">
+        <input id="rb-hint" placeholder="Подсказка — о чём рубрика" style="flex:2">
+        <button class="btn ghost" onclick="addRubric()">Добавить</button>
+      </div>
+    </div>`;
+  loadUsers(); loadBrand(); loadRubricsAdmin();
 }
+async function loadBrand() {
+  const r = await api("brand"); const b = r.brand || {}; const box = $("brandBox"); if (!box) return;
+  const f = (id, label, val) => `<label style="display:block;margin-bottom:6px"><span style="font-size:12px;color:var(--muted)">${label}</span><input id="${id}" value="${esc(val || "")}" style="width:100%"></label>`;
+  box.innerHTML = `
+    ${f("br-name", "Название", b.name)}
+    <label style="display:block;margin-bottom:6px"><span style="font-size:12px;color:var(--muted)">Тон общения</span><textarea id="br-tone" style="width:100%;min-height:52px">${esc(b.tone || "")}</textarea></label>
+    ${f("br-disc", "Дисклеймер (противопоказания)", b.disclaimer)}
+    ${f("br-tags", "Хэштеги", b.hashtags)}
+    ${f("br-sign", "Подпись", b.signature)}
+    <div class="row">${f("br-primary", "Основной цвет", b.primary_color)}${f("br-accent", "Акцент", b.accent_color)}</div>
+    ${f("br-logo", "URL логотипа", b.logo_url)}
+    <div style="margin-top:8px"><button class="btn primary" onclick="saveBrand()">Сохранить стиль</button></div>`;
+}
+async function saveBrand() {
+  const g = (id) => ($(id) ? $(id).value : "");
+  const r = await api("brand", { name: g("br-name"), tone: g("br-tone"), disclaimer: g("br-disc"), hashtags: g("br-tags"), signature: g("br-sign"), primary_color: g("br-primary"), accent_color: g("br-accent"), logo_url: g("br-logo") });
+  toast(r.ok ? "Стиль сохранён ✓" : (r.error || "Не удалось"));
+}
+async function loadRubricsAdmin() {
+  const r = await api("rubrics"); window.RUBRICS = r.rubrics || []; const box = $("rubBox"); if (!box) return;
+  box.innerHTML = window.RUBRICS.length ? window.RUBRICS.map((x) => `<div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--line)"><b>${esc(x.title)}</b><span style="color:var(--muted);font-size:13px">${esc(x.hint || "")}</span><button class="link" style="margin-left:auto" onclick="delRubric(${x.id})">убрать</button></div>`).join("") : `<div class="empty">Пока нет рубрик.</div>`;
+}
+async function addRubric() {
+  const title = $("rb-title").value.trim(), hint = $("rb-hint").value.trim();
+  if (!title) { toast("Название рубрики"); return; }
+  const r = await api("rubrics/add", { title, hint });
+  if (!r.ok) { toast(r.error || "Не удалось"); return; }
+  $("rb-title").value = ""; $("rb-hint").value = ""; toast("Рубрика добавлена ✓"); loadRubricsAdmin();
+}
+async function delRubric(id) { const r = await api("rubrics/delete", { id }); toast(r.ok ? "Убрано ✓" : "Не удалось"); loadRubricsAdmin(); }
 async function addUser() {
   const email = $("u-email").value.trim(), password = $("u-pass").value, name = $("u-name").value.trim();
   if (!email || !password) { toast("email и пароль обязательны"); return; }

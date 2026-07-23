@@ -47,6 +47,9 @@ input:focus,textarea:focus,select:focus{border-color:var(--red)}
 .badge.ad{background:#fdf3e3;color:var(--warn)}
 .badge.st-draft{background:#eef1f6;color:var(--muted)}
 .badge.st-ready{background:#e7f6ee;color:var(--ok)}
+.badge.st-pending{background:#fdf3e3;color:var(--warn)}
+.badge.st-approved{background:#e7f6ee;color:var(--ok)}
+.badge.st-rejected{background:#fdecec;color:var(--red)}
 .badge.st-published{background:#e8eefc;color:#2b5fd0}
 
 .idea{border:1px solid var(--line);border-radius:12px;padding:14px;background:#fff}

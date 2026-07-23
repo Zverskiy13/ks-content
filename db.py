@@ -118,11 +118,6 @@ CREATE TABLE IF NOT EXISTS cp_scout (
     analyzed    boolean NOT NULL DEFAULT false,
     UNIQUE (region_id, post_url)
 );
-CREATE TABLE IF NOT EXISTS cp_brand (
-    region_id  bigint PRIMARY KEY REFERENCES cp_regions(id),
-    style      text NOT NULL DEFAULT '',
-    updated_at timestamptz NOT NULL DEFAULT now()
-);
 CREATE TABLE IF NOT EXISTS cp_social (
     id         bigserial PRIMARY KEY,
     region_id  bigint REFERENCES cp_regions(id),
@@ -135,11 +130,33 @@ CREATE TABLE IF NOT EXISTS cp_social (
 ALTER TABLE cp_plan ADD COLUMN IF NOT EXISTS published_url text;
 ALTER TABLE cp_plan ADD COLUMN IF NOT EXISTS publish_error text;
 ALTER TABLE cp_plan ADD COLUMN IF NOT EXISTS published_at timestamptz;
-ALTER TABLE cp_plan ADD COLUMN IF NOT EXISTS image_url text;
-ALTER TABLE cp_plan ADD COLUMN IF NOT EXISTS image_data text;
-ALTER TABLE cp_plan ADD COLUMN IF NOT EXISTS video_url text;
-ALTER TABLE cp_plan ADD COLUMN IF NOT EXISTS metrics jsonb;
-ALTER TABLE cp_plan ADD COLUMN IF NOT EXISTS metrics_at timestamptz;
+-- модерация
+ALTER TABLE cp_plan ADD COLUMN IF NOT EXISTS rubric_id   bigint;
+ALTER TABLE cp_plan ADD COLUMN IF NOT EXISTS review_note text;
+ALTER TABLE cp_plan ADD COLUMN IF NOT EXISTS reviewed_by text;
+ALTER TABLE cp_plan ADD COLUMN IF NOT EXISTS reviewed_at timestamptz;
+ALTER TABLE cp_plan ADD COLUMN IF NOT EXISTS submitted_at timestamptz;
+-- фирменный стиль (одна строка настроек) и рубрики
+CREATE TABLE IF NOT EXISTS cp_brand (
+    id            smallint PRIMARY KEY DEFAULT 1,
+    name          text NOT NULL DEFAULT 'Клиники Столицы',
+    primary_color text NOT NULL DEFAULT '#C0392B',
+    accent_color  text NOT NULL DEFAULT '#1F9D55',
+    tone          text NOT NULL DEFAULT 'Тёплый, экспертный, заботливый. Без обещаний излечения и медицинских гарантий (ст. 24 ФЗ «О рекламе»).',
+    disclaimer    text NOT NULL DEFAULT 'Имеются противопоказания, необходима консультация специалиста.',
+    hashtags      text NOT NULL DEFAULT '#КлиникиСтолицы #здоровье #анализы #профосмотр',
+    signature     text NOT NULL DEFAULT 'Клиники Столицы · запись: 8 800 200 89 90',
+    logo_url      text NOT NULL DEFAULT '',
+    updated_at    timestamptz NOT NULL DEFAULT now(),
+    CHECK (id = 1)
+);
+CREATE TABLE IF NOT EXISTS cp_rubrics (
+    id         bigserial PRIMARY KEY,
+    title      text NOT NULL,
+    hint       text NOT NULL DEFAULT '',
+    active     boolean NOT NULL DEFAULT true,
+    created_at timestamptz NOT NULL DEFAULT now()
+);
 CREATE INDEX IF NOT EXISTS cp_ideas_region ON cp_ideas(region_id);
 CREATE INDEX IF NOT EXISTS cp_plan_region ON cp_plan(region_id);
 CREATE INDEX IF NOT EXISTS cp_sources_region ON cp_sources(region_id);
