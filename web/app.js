@@ -247,6 +247,7 @@ async function toPlan(ideaId) {
 }
 async function renderPlan() {
   PICK = {}; window.__planImg = null;
+  if (!(window.RUBRICS || []).length) { try { const rr = await api("rubrics"); window.RUBRICS = rr.rubrics || []; } catch (e) {} }
   const plats = PLATFORMS.map((p) => `<div class="plat ${p.active ? "" : "dis"}" data-k="${p.key}" onclick="${p.active ? `togglePlat('${p.key}',this)` : ""}">
       ${esc(p.name)}${p.active ? "" : ` <small>· ${esc(p.note)}</small>`}</div>`).join("");
   $("pane-plan").innerHTML = `
